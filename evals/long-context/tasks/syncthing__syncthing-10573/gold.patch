@@ -1,0 +1,142 @@
+From 30447513484e4ea161d5b3f6677027fd6260f005 Mon Sep 17 00:00:00 2001
+From: Marcus B Spencer <marcus@marcusspencer.us>
+Date: Thu, 12 Feb 2026 02:21:35 -0600
+Subject: [PATCH] chore(config, connections): use same redial interval for QUIC
+ and TCP
+
+Signed-off-by: Marcus B Spencer <marcus@marcusspencer.us>
+---
+ lib/config/config.go                    |  2 +-
+ lib/config/config_test.go               |  2 +-
+ lib/config/migrations.go                |  6 ++++++
+ lib/config/migrations_test.go           | 22 ++++++++++++++++++++++
+ lib/config/optionsconfiguration.go      |  2 +-
+ lib/config/testdata/overridenvalues.xml |  2 +-
+ lib/connections/quic_dial.go            |  9 +--------
+ 7 files changed, 33 insertions(+), 12 deletions(-)
+
+diff --git a/lib/config/config.go b/lib/config/config.go
+index ebf3a78ff35..4407cf35bd7 100644
+--- a/lib/config/config.go
++++ b/lib/config/config.go
+@@ -33,7 +33,7 @@ import (
+ 
+ const (
+ 	OldestHandledVersion = 10
+-	CurrentVersion       = 51
++	CurrentVersion       = 52
+ 	MaxRescanIntervalS   = 365 * 24 * 60 * 60
+ )
+ 
+diff --git a/lib/config/config_test.go b/lib/config/config_test.go
+index c4775e2ab85..db1966739e0 100644
+--- a/lib/config/config_test.go
++++ b/lib/config/config_test.go
+@@ -62,7 +62,7 @@ func TestDefaultValues(t *testing.T) {
+ 			LocalAnnMCAddr:            "[ff12::8384]:21027",
+ 			MaxSendKbps:               0,
+ 			MaxRecvKbps:               0,
+-			ReconnectIntervalS:        60,
++			ReconnectIntervalS:        20,
+ 			RelaysEnabled:             true,
+ 			RelayReconnectIntervalM:   10,
+ 			StartBrowser:              true,
+diff --git a/lib/config/migrations.go b/lib/config/migrations.go
+index 603e9ee32a6..382bccfad59 100644
+--- a/lib/config/migrations.go
++++ b/lib/config/migrations.go
+@@ -30,6 +30,7 @@ import (
+ // put the newest on top for readability.
+ var (
+ 	migrations = migrationSet{
++		{52, migrateToConfigV52},
+ 		{51, migrateToConfigV51},
+ 		{50, migrateToConfigV50},
+ 		{37, migrateToConfigV37},
+@@ -101,6 +102,11 @@ func (m migration) apply(cfg *Configuration) {
+ 	cfg.Version = m.targetVersion
+ }
+ 
++func migrateToConfigV52(cfg *Configuration) {
++	oldQuicInterval := max(cfg.Options.ReconnectIntervalS/3, 10)
++	cfg.Options.ReconnectIntervalS = min(cfg.Options.ReconnectIntervalS, oldQuicInterval)
++}
++
+ func migrateToConfigV51(cfg *Configuration) {
+ 	oldDefault := 2
+ 	for i, fcfg := range cfg.Folders {
+diff --git a/lib/config/migrations_test.go b/lib/config/migrations_test.go
+index 9e4bf11141f..b82ec9215bf 100644
+--- a/lib/config/migrations_test.go
++++ b/lib/config/migrations_test.go
+@@ -34,3 +34,25 @@ func TestMigrateCrashReporting(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestMigrateReconnectInterval(t *testing.T) {
++	cases := []struct {
++		oldInterval         int
++		expectedNewInterval int
++	}{
++		{oldInterval: 60, expectedNewInterval: 20},
++		{oldInterval: 120, expectedNewInterval: 40},
++		{oldInterval: 25, expectedNewInterval: 10},
++		{oldInterval: 5, expectedNewInterval: 5},
++	}
++
++	for i, tc := range cases {
++		cfg := Configuration{Version: 51, Options: OptionsConfiguration{ReconnectIntervalS: tc.oldInterval}}
++		migrationsMut.Lock()
++		migrations.apply(&cfg)
++		migrationsMut.Unlock()
++		if cfg.Options.ReconnectIntervalS != tc.expectedNewInterval {
++			t.Errorf("%d: unexpected result, ReconnectIntervalS: %v != %v", i, cfg.Options.ReconnectIntervalS, tc.expectedNewInterval)
++		}
++	}
++}
+diff --git a/lib/config/optionsconfiguration.go b/lib/config/optionsconfiguration.go
+index 360b59ba395..283c4aaa88b 100644
+--- a/lib/config/optionsconfiguration.go
++++ b/lib/config/optionsconfiguration.go
+@@ -28,7 +28,7 @@ type OptionsConfiguration struct {
+ 	LocalAnnMCAddr              string   `json:"localAnnounceMCAddr" xml:"localAnnounceMCAddr" default:"[ff12::8384]:21027"`
+ 	MaxSendKbps                 int      `json:"maxSendKbps" xml:"maxSendKbps"`
+ 	MaxRecvKbps                 int      `json:"maxRecvKbps" xml:"maxRecvKbps"`
+-	ReconnectIntervalS          int      `json:"reconnectionIntervalS" xml:"reconnectionIntervalS" default:"60"`
++	ReconnectIntervalS          int      `json:"reconnectionIntervalS" xml:"reconnectionIntervalS" default:"20"`
+ 	RelaysEnabled               bool     `json:"relaysEnabled" xml:"relaysEnabled" default:"true"`
+ 	RelayReconnectIntervalM     int      `json:"relayReconnectIntervalM" xml:"relayReconnectIntervalM" default:"10"`
+ 	StartBrowser                bool     `json:"startBrowser" xml:"startBrowser" default:"true"`
+diff --git a/lib/config/testdata/overridenvalues.xml b/lib/config/testdata/overridenvalues.xml
+index 0fb3a14b207..fbaf8833740 100644
+--- a/lib/config/testdata/overridenvalues.xml
++++ b/lib/config/testdata/overridenvalues.xml
+@@ -1,4 +1,4 @@
+-<configuration version="34">
++<configuration version="52">
+     <options>
+         <listenAddress>tcp://:23000</listenAddress>
+         <allowDelete>false</allowDelete>
+diff --git a/lib/connections/quic_dial.go b/lib/connections/quic_dial.go
+index 4ffe7d04b03..1deda0ea37b 100644
+--- a/lib/connections/quic_dial.go
++++ b/lib/connections/quic_dial.go
+@@ -99,16 +99,9 @@ func (d *quicDialer) Dial(ctx context.Context, _ protocol.DeviceID, uri *url.URL
+ type quicDialerFactory struct{}
+ 
+ func (quicDialerFactory) New(opts config.OptionsConfiguration, tlsCfg *tls.Config, registry *registry.Registry, lanChecker *lanChecker) genericDialer {
+-	// So the idea is that we should probably try dialing every 20 seconds.
+-	// However it would still be nice if this was adjustable/proportional to ReconnectIntervalS
+-	// But prevent something silly like 1/3 = 0 etc.
+-	quicInterval := opts.ReconnectIntervalS / 3
+-	if quicInterval < 10 {
+-		quicInterval = 10
+-	}
+ 	return &quicDialer{
+ 		commonDialer: commonDialer{
+-			reconnectInterval: time.Duration(quicInterval) * time.Second,
++			reconnectInterval: time.Duration(opts.ReconnectIntervalS) * time.Second,
+ 			tlsCfg:            tlsCfg,
+ 			lanChecker:        lanChecker,
+ 			lanPriority:       opts.ConnectionPriorityQUICLAN,

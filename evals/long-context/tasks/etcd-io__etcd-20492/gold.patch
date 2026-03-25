@@ -1,0 +1,235 @@
+From 59ce0ce31f5e4cc28eda47ceaba9d213aa9a8a2f Mon Sep 17 00:00:00 2001
+From: "shenmu.wy" <shenmu.wy@antfin.com>
+Date: Fri, 15 Aug 2025 14:57:46 +0800
+Subject: [PATCH] add PriorityRequest FeatureGate to make LeaseRevoke have
+ higher priority to be applied under overload conditions
+
+Signed-off-by: shenmu.wy <shenmu.wy@antfin.com>
+---
+ CHANGELOG/CHANGELOG-3.7.md       |  1 +
+ server/etcdserver/server_test.go |  8 ++--
+ server/etcdserver/util.go        | 20 ++++++++++
+ server/etcdserver/util_test.go   | 65 ++++++++++++++++++++++++++++++++
+ server/etcdserver/v3_server.go   |  5 ++-
+ server/features/etcd_features.go |  6 +++
+ 6 files changed, 100 insertions(+), 5 deletions(-)
+
+diff --git a/CHANGELOG/CHANGELOG-3.7.md b/CHANGELOG/CHANGELOG-3.7.md
+index d350f6762690..bc9b3700d2e9 100644
+--- a/CHANGELOG/CHANGELOG-3.7.md
++++ b/CHANGELOG/CHANGELOG-3.7.md
+@@ -14,6 +14,7 @@ Previous change logs can be found at [CHANGELOG-3.6](https://github.com/etcd-io/
+ 
+ ### etcd server
+ 
++- [Prioritize LeaseRevoke requests to ensure timely lease expiration during overload conditions](https://github.com/etcd-io/etcd/pull/20492)
+ - [Update go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc to v0.61.0 and replaced the deprecated `UnaryServerInterceptor` and `StreamServerInterceptor` with `NewServerHandler`](https://github.com/etcd-io/etcd/pull/20017)
+ - [Add Support for Unix Socket endpoints](https://github.com/etcd-io/etcd/pull/19760)
+ - [Improves performance of lease and user/role operations (up to 2x) by updating `(*readView) Rev()` to use `SharedBufReadTxMode`](https://github.com/etcd-io/etcd/pull/20411)
+diff --git a/server/etcdserver/server_test.go b/server/etcdserver/server_test.go
+index 55f5d710707c..d33cc545f8f6 100644
+--- a/server/etcdserver/server_test.go
++++ b/server/etcdserver/server_test.go
+@@ -1050,7 +1050,7 @@ func TestPublishV3(t *testing.T) {
+ 		lgMu:       new(sync.RWMutex),
+ 		lg:         lg,
+ 		readych:    make(chan struct{}),
+-		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000},
++		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000, ServerFeatureGate: features.NewDefaultServerFeatureGate("test", lg)},
+ 		memberID:   1,
+ 		r:          *newRaftNode(raftNodeConfig{lg: lg, Node: n}),
+ 		attributes: membership.Attributes{Name: "node1", ClientURLs: []string{"http://a", "http://b"}},
+@@ -1092,7 +1092,7 @@ func TestPublishV3Stopped(t *testing.T) {
+ 	srv := &EtcdServer{
+ 		lgMu:     new(sync.RWMutex),
+ 		lg:       zaptest.NewLogger(t),
+-		Cfg:      config.ServerConfig{Logger: zaptest.NewLogger(t), TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries},
++		Cfg:      config.ServerConfig{Logger: zaptest.NewLogger(t), TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, ServerFeatureGate: features.NewDefaultServerFeatureGate("test", nil)},
+ 		r:        *r,
+ 		cluster:  &membership.RaftCluster{},
+ 		w:        mockwait.NewNop(),
+@@ -1120,7 +1120,7 @@ func TestPublishV3Retry(t *testing.T) {
+ 		lgMu:       new(sync.RWMutex),
+ 		lg:         lg,
+ 		readych:    make(chan struct{}),
+-		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000},
++		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000, ServerFeatureGate: features.NewDefaultServerFeatureGate("test", lg)},
+ 		memberID:   1,
+ 		r:          *newRaftNode(raftNodeConfig{lg: lg, Node: n}),
+ 		w:          mockwait.NewNop(),
+@@ -1171,7 +1171,7 @@ func TestUpdateVersionV3(t *testing.T) {
+ 		lgMu:       new(sync.RWMutex),
+ 		lg:         zaptest.NewLogger(t),
+ 		memberID:   1,
+-		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000},
++		Cfg:        config.ServerConfig{Logger: lg, TickMs: 1, SnapshotCatchUpEntries: DefaultSnapshotCatchUpEntries, MaxRequestBytes: 1000, ServerFeatureGate: features.NewDefaultServerFeatureGate("test", lg)},
+ 		r:          *newRaftNode(raftNodeConfig{lg: zaptest.NewLogger(t), Node: n}),
+ 		attributes: membership.Attributes{Name: "node1", ClientURLs: []string{"http://node1.com"}},
+ 		cluster:    &membership.RaftCluster{},
+diff --git a/server/etcdserver/util.go b/server/etcdserver/util.go
+index b23ab682e494..487095ffbd2e 100644
+--- a/server/etcdserver/util.go
++++ b/server/etcdserver/util.go
+@@ -17,6 +17,7 @@ package etcdserver
+ import (
+ 	"time"
+ 
++	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+ 	"go.etcd.io/etcd/client/pkg/v3/types"
+ 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
+ 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
+@@ -41,6 +42,25 @@ func isConnectedFullySince(transport rafthttp.Transporter, since time.Time, self
+ 	return numConnectedSince(transport, since, self, members) == len(members)
+ }
+ 
++// exceedsRequestLimit checks if the committed index is too far ahead of the applied index.
++// LeaseRevoke requests are prioritized to ensure timely lease expiration,
++// which helps mitigate pressure on the cluster.
++func exceedsRequestLimit(appliedIndex, committedIndex uint64, r *pb.InternalRaftRequest, enablePriority bool) bool {
++	if committedIndex <= appliedIndex+maxNormalGap {
++		return false
++	}
++	if enablePriority && isPriorityRequest(r) {
++		if committedIndex <= appliedIndex+maxPriorityGap {
++			return false
++		}
++	}
++	return true
++}
++
++func isPriorityRequest(r *pb.InternalRaftRequest) bool {
++	return r != nil && r.LeaseRevoke != nil
++}
++
+ // numConnectedSince counts how many members are connected to the local member
+ // since the given time.
+ func numConnectedSince(transport rafthttp.Transporter, since time.Time, self types.ID, members []*membership.Member) int {
+diff --git a/server/etcdserver/util_test.go b/server/etcdserver/util_test.go
+index 816369e13203..83170a1cd226 100644
+--- a/server/etcdserver/util_test.go
++++ b/server/etcdserver/util_test.go
+@@ -19,8 +19,10 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/stretchr/testify/assert"
+ 	"go.uber.org/zap/zaptest"
+ 
++	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+ 	"go.etcd.io/etcd/client/pkg/v3/types"
+ 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
+ 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
+@@ -90,3 +92,66 @@ func (s *nopTransporterWithActiveTime) Stop()                               {}
+ func (s *nopTransporterWithActiveTime) Pause()                              {}
+ func (s *nopTransporterWithActiveTime) Resume()                             {}
+ func (s *nopTransporterWithActiveTime) reset(am map[types.ID]time.Time)     { s.activeMap = am }
++
++func TestExceedsRequestLimit(t *testing.T) {
++	tests := []struct {
++		name           string
++		ci             uint64
++		ai             uint64
++		expectedResult bool
++		req            *pb.InternalRaftRequest
++		enablePriority bool
++	}{
++		{
++			ci:             1 + maxGapBetweenApplyAndCommitIndex,
++			ai:             1,
++			expectedResult: false,
++			req:            nil,
++			name:           "Test nil InternalRaftRequest",
++		},
++		{
++			ci:             1 + maxGapBetweenApplyAndCommitIndex,
++			ai:             1,
++			expectedResult: false,
++			req:            &pb.InternalRaftRequest{},
++			name:           "Test non-critical request and gap is not larger than maxGapBetweenApplyAndCommitIndex",
++		},
++		{
++			ci:             1 + maxGapBetweenApplyAndCommitIndex + 1,
++			ai:             1,
++			expectedResult: true,
++			req:            &pb.InternalRaftRequest{},
++			name:           "Test non-critical request and gap is larger than maxGapBetweenApplyAndCommitIndex",
++		},
++		{
++			ci:             1 + maxGapBetweenApplyAndCommitIndex + 1,
++			ai:             1,
++			expectedResult: false,
++			req:            &pb.InternalRaftRequest{LeaseRevoke: &pb.LeaseRevokeRequest{}},
++			name:           "Test critical request and gap is larger than maxGapBetweenApplyAndCommitIndex with priority check",
++			enablePriority: true,
++		},
++		{
++			ci:             1 + maxGapBetweenApplyAndCommitIndex + 1,
++			ai:             1,
++			expectedResult: true,
++			req:            &pb.InternalRaftRequest{LeaseRevoke: &pb.LeaseRevokeRequest{}},
++			name:           "Test critical request and gap is larger than maxGapBetweenApplyAndCommitIndex without priority check",
++			enablePriority: false,
++		},
++		{
++			ci:             1 + 2*maxGapBetweenApplyAndCommitIndex + 1,
++			ai:             1,
++			expectedResult: true,
++			req:            &pb.InternalRaftRequest{LeaseRevoke: &pb.LeaseRevokeRequest{}},
++			name:           "Test critical request and gap is larger than 200% maxGapBetweenApplyAndCommitIndex with priority check",
++			enablePriority: true,
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			assert.Equal(t, tc.expectedResult, exceedsRequestLimit(tc.ai, tc.ci, tc.req, tc.enablePriority))
++		})
++	}
++}
+diff --git a/server/etcdserver/v3_server.go b/server/etcdserver/v3_server.go
+index c76e5009e3ed..01b7d3df7f53 100644
+--- a/server/etcdserver/v3_server.go
++++ b/server/etcdserver/v3_server.go
+@@ -49,6 +49,8 @@ const (
+ 	// However, if the committed entries are very heavy to toApply, the gap might grow.
+ 	// We should stop accepting new proposals if the gap growing to a certain point.
+ 	maxGapBetweenApplyAndCommitIndex = 5000
++	maxNormalGap                     = maxGapBetweenApplyAndCommitIndex
++	maxPriorityGap                   = 2 * maxGapBetweenApplyAndCommitIndex
+ 	traceThreshold                   = 100 * time.Millisecond
+ 	readIndexRetryTime               = 500 * time.Millisecond
+ 
+@@ -923,7 +925,8 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
+ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*apply2.Result, error) {
+ 	ai := s.getAppliedIndex()
+ 	ci := s.getCommittedIndex()
+-	if ci > ai+maxGapBetweenApplyAndCommitIndex {
++
++	if exceedsRequestLimit(ai, ci, &r, s.FeatureEnabled(features.PriorityRequest)) {
+ 		return nil, errors.ErrTooManyRequests
+ 	}
+ 
+diff --git a/server/features/etcd_features.go b/server/features/etcd_features.go
+index 83afc7cf3958..2b8f9da10b09 100644
+--- a/server/features/etcd_features.go
++++ b/server/features/etcd_features.go
+@@ -79,6 +79,11 @@ const (
+ 	// beta: v3.7
+ 	// main PR: https://github.com/etcd-io/etcd/pull/20589
+ 	FastLeaseKeepAlive featuregate.Feature = "FastLeaseKeepAlive"
++	// PriorityRequest enables certain kinds of requests(e.g. LeaseRevoke) having higher priority to be applied under overload conditions.
++	// owner: @silentred
++	// alpha: v3.7
++	// main PR: https://github.com/etcd-io/etcd/pull/20492
++	PriorityRequest featuregate.Feature = "PriorityRequest"
+ )
+ 
+ var DefaultEtcdServerFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
+@@ -90,6 +95,7 @@ var DefaultEtcdServerFeatureGates = map[featuregate.Feature]featuregate.FeatureS
+ 	LeaseCheckpointPersist:       {Default: false, PreRelease: featuregate.Alpha},
+ 	SetMemberLocalAddr:           {Default: false, PreRelease: featuregate.Alpha},
+ 	FastLeaseKeepAlive:           {Default: true, PreRelease: featuregate.Beta},
++	PriorityRequest:              {Default: false, PreRelease: featuregate.Alpha},
+ }
+ 
+ func NewDefaultServerFeatureGate(name string, lg *zap.Logger) featuregate.FeatureGate {

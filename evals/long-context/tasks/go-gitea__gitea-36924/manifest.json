@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "instance_id": "go-gitea__gitea-36924",
+  "repo": {
+    "full_name": "go-gitea/gitea",
+    "url": "https://github.com/go-gitea/gitea",
+    "base_commit": "ee009ebec8be9721e379e7b483f4fe70d86ad1e2",
+    "primary_language": "Go",
+    "languages": [
+      "Go",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "### Feature Description\n\nWe updated to 1.25.1 and face now the issue that when jobs fail, they must be restarted once after another. \n\nWe do have a workflow with over 30 jobs. Due to infrastructure, they fail more often than we would like.\n\nPlease add a button to restart all failed jobs.\n\n### Screenshots\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/go-gitea/gitea/issues/35997",
+    "source_id": 35997
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "options/locale/locale_en-US.json",
+      "routers/api/v1/api.go",
+      "routers/api/v1/repo/action.go",
+      "routers/web/devtest/mock_actions.go",
+      "routers/web/repo/actions/view.go",
+      "routers/web/web.go",
+      "services/actions/rerun.go",
+      "services/actions/rerun_test.go",
+      "templates/repo/actions/view_component.tmpl",
+      "templates/swagger/v1_json.tmpl",
+      "web_src/js/components/RepoActionView.vue",
+      "web_src/js/features/repo-actions.ts"
+    ],
+    "affected_directories": [
+      "options/locale",
+      "routers/api/v1",
+      "routers/api/v1/repo",
+      "routers/web",
+      "routers/web/devtest",
+      "routers/web/repo/actions",
+      "services/actions",
+      "templates/repo/actions",
+      "templates/swagger",
+      "web_src/js/components",
+      "web_src/js/features"
+    ],
+    "files_changed": 12,
+    "directories_changed": 11,
+    "insertions": 330,
+    "deletions": 43,
+    "test_files_changed": [
+      "routers/web/devtest/mock_actions.go",
+      "services/actions/rerun_test.go"
+    ],
+    "source_files_changed": [
+      "options/locale/locale_en-US.json",
+      "routers/api/v1/api.go",
+      "routers/api/v1/repo/action.go",
+      "routers/web/repo/actions/view.go",
+      "routers/web/web.go",
+      "services/actions/rerun.go",
+      "templates/repo/actions/view_component.tmpl",
+      "templates/swagger/v1_json.tmpl",
+      "web_src/js/components/RepoActionView.vue",
+      "web_src/js/features/repo-actions.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 36924,
+    "pr_url": "https://github.com/go-gitea/gitea/pull/36924",
+    "pr_title": "Feature: Add button to re-run failed jobs in Actions",
+    "pr_merged_at": "2026-03-21T21:27:13Z",
+    "issue_number": 35997,
+    "issue_url": "https://github.com/go-gitea/gitea/issues/35997",
+    "issue_created_at": "2025-11-21T05:11:29Z",
+    "issue_labels": [
+      "type/proposal",
+      "topic/gitea-actions"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation",
+      "api-boundary"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 12,
+    "directories_changed": 11,
+    "cross_package": false,
+    "insertions": 330,
+    "deletions": 43,
+    "dependency_depth": 10,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 43.3
+  },
+  "contamination": {
+    "issue_created_at": "2025-11-21T05:11:29Z",
+    "pr_merged_at": "2026-03-21T21:27:13Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "routers/web/devtest/mock_actions.go",
+      "services/actions/rerun_test.go"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "options/locale/locale_en-US.json",
+      "routers/api/v1/api.go",
+      "routers/api/v1/repo/action.go",
+      "routers/web/devtest/mock_actions.go",
+      "routers/web/repo/actions/view.go",
+      "routers/web/web.go",
+      "services/actions/rerun.go",
+      "services/actions/rerun_test.go",
+      "templates/repo/actions/view_component.tmpl",
+      "templates/swagger/v1_json.tmpl",
+      "web_src/js/components/RepoActionView.vue",
+      "web_src/js/features/repo-actions.ts"
+    ],
+    "dependency_chain": [
+      "options/locale/locale_en-US.json",
+      "routers/api/v1/api.go",
+      "routers/api/v1/repo/action.go",
+      "routers/web/repo/actions/view.go",
+      "routers/web/web.go",
+      "services/actions/rerun.go",
+      "templates/repo/actions/view_component.tmpl",
+      "templates/swagger/v1_json.tmpl",
+      "web_src/js/components/RepoActionView.vue",
+      "web_src/js/features/repo-actions.ts"
+    ],
+    "min_context_tokens": 24000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

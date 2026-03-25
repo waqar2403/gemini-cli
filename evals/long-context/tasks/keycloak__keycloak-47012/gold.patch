@@ -1,0 +1,195 @@
+From 137ef6d32557446825fbd458fe96bbe73398d888 Mon Sep 17 00:00:00 2001
+From: stianst <stianst@gmail.com>
+Date: Tue, 10 Mar 2026 11:21:43 +0100
+Subject: [PATCH] Add debug helper utility to the test framework
+
+Closes #47011
+
+Signed-off-by: stianst <stianst@gmail.com>
+---
+ .../keycloak/testframework/DebugHelper.java   | 59 +++++++++++++++++++
+ .../KeycloakIntegrationTestExtension.java     |  2 +
+ .../testframework/DebugHelperTest.java        | 37 ++++++++++++
+ test-framework/docs/DEBUGGING.md              | 33 +++++++++++
+ test-framework/docs/README.md                 |  1 +
+ 5 files changed, 132 insertions(+)
+ create mode 100644 test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java
+ create mode 100644 test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java
+ create mode 100644 test-framework/docs/DEBUGGING.md
+
+diff --git a/test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java b/test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java
+new file mode 100644
+index 000000000000..5bb047fe766c
+--- /dev/null
++++ b/test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java
+@@ -0,0 +1,59 @@
++package org.keycloak.testframework;
++
++import java.lang.reflect.Method;
++
++public class DebugHelper {
++
++    private static boolean IN_TEST = false;
++    private static String CURRENT_TEST_CLASS;
++    private static String CURRENT_TEST_METHOD;
++
++    static void testStarted(Class<?> clazz, Method method) {
++        IN_TEST = true;
++        CURRENT_TEST_CLASS = clazz.getName();
++        CURRENT_TEST_METHOD = method.getName();
++    }
++
++    static void testFinished() {
++        IN_TEST = false;
++        CURRENT_TEST_CLASS = null;
++        CURRENT_TEST_METHOD = null;
++    }
++
++    public static boolean isInTest() {
++        return IN_TEST;
++    }
++
++    public static boolean isInTest(String test) {
++        if (!IN_TEST) {
++            return false;
++        }
++
++        String[] split = test.split("#");
++
++        String expectedClassName = split[0].isEmpty() ? null : split[0];
++        String expectedMethod = split.length > 1 ? split[1] : null;
++
++        if (expectedClassName != null) {
++            if (expectedClassName.indexOf('.') != -1) {
++                if (!expectedClassName.equals(CURRENT_TEST_CLASS)) {
++                    return false;
++                }
++            } else {
++                String currentTestSimpleName = CURRENT_TEST_CLASS.substring(CURRENT_TEST_CLASS.lastIndexOf('.') + 1);
++                if (!expectedClassName.equals(currentTestSimpleName)) {
++                    return false;
++                }
++            }
++        }
++
++        if (expectedMethod != null) {
++            if (!expectedMethod.equals(CURRENT_TEST_METHOD)) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++}
+diff --git a/test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java b/test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java
+index 18f954c05148..44cf0675b078 100644
+--- a/test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java
++++ b/test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java
+@@ -29,10 +29,12 @@ public void beforeEach(ExtensionContext context) {
+         getLogHandler(context).beforeEachStarting(context);
+         getRegistry(context).beforeEach(context.getRequiredTestInstance(), context.getRequiredTestMethod());
+         getLogHandler(context).beforeEachCompleted(context);
++        DebugHelper.testStarted(context.getRequiredTestClass(), context.getRequiredTestMethod());
+     }
+ 
+     @Override
+     public void afterEach(ExtensionContext context) {
++        DebugHelper.testFinished();
+         getLogHandler(context).afterEachStarting(context);
+         getRegistry(context).afterEach();
+         getLogHandler(context).afterEachCompleted(context);
+diff --git a/test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java b/test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java
+new file mode 100644
+index 000000000000..9f95c952b3db
+--- /dev/null
++++ b/test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java
+@@ -0,0 +1,37 @@
++package org.keycloak.testframework;
++
++import org.junit.jupiter.api.Assertions;
++import org.junit.jupiter.api.Test;
++
++public class DebugHelperTest {
++
++    @Test
++    public void testInTest() throws NoSuchMethodException {
++        Assertions.assertFalse(DebugHelper.isInTest());
++        DebugHelper.testStarted(DebugHelperTest.class, getClass().getMethod("testInTest"));
++
++        Assertions.assertTrue(DebugHelper.isInTest());
++
++        Assertions.assertTrue(DebugHelper.isInTest("DebugHelperTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("OtherTest"));
++        Assertions.assertTrue(DebugHelper.isInTest("org.keycloak.testframework.DebugHelperTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.testframework.OtherTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.othermethod.DebugHelperTest"));
++
++        Assertions.assertTrue(DebugHelper.isInTest("#testInTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("#testInTest2"));
++
++        Assertions.assertTrue(DebugHelper.isInTest("DebugHelperTest#testInTest"));
++        Assertions.assertTrue(DebugHelper.isInTest("org.keycloak.testframework.DebugHelperTest#testInTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.testframework.OtherTest#testInTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.testframework.DebugHelperTest#testInTest2"));
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.other.DebugHelperTest#testInTest"));
++        Assertions.assertFalse(DebugHelper.isInTest("OtherTest#testInTest"));
++
++        DebugHelper.testFinished();
++
++        Assertions.assertFalse(DebugHelper.isInTest());
++        Assertions.assertFalse(DebugHelper.isInTest("org.keycloak.testframework.DebugHelperTest#testInTest"));
++    }
++
++}
+diff --git a/test-framework/docs/DEBUGGING.md b/test-framework/docs/DEBUGGING.md
+new file mode 100644
+index 000000000000..d0660afcde2a
+--- /dev/null
++++ b/test-framework/docs/DEBUGGING.md
+@@ -0,0 +1,33 @@
++# Debugging
++
++When debugging Keycloak or extensions the embedded server mode is very useful as it allows debugging tests, Keycloak,
++as well as extensions from the IDE without attaching remote debuggers.
++
++To configure the embedded server mode the simplest approach is to add `.env.test` to the root of the project with the
++following contents:
++
++```properties
++KC_TEST_SERVER=embedded
++KC_TEST_DATABASE=dev-file
++KC_TEST_DATABASE_REUSE=true
++```
++
++Using `dev-file` with re-use is optional, but helps to reduce the startup time.
++
++## Debug helper
++
++When debugging Keycloak or extension code there may be an issue that the relevant debug statement is invoked during
++test framework setup, or during other tests. To help with this there is a utility called `DebugHelper`.
++
++To use this when adding a breakpoint add a condition on `DebugHelper.isInTest()` this will result in the debugger
++only stopping on the breakpoint if a test method is currently in progress.
++
++For more advanced use-cases it is also possible to specify the test class and or method name the debugger should stop by
++passing a string to `isInTest`. The syntax is `testClassName#testMethodName` where `testClassName` can be the simple-name
++of the test class, or the fully qualified name:
++
++* `DebugHelper.isInTest("org.package.MyTest")`
++* `DebugHelper.isInTest("MyTest")`
++* `DebugHelper.isInTest("#testMethod")`
++* `DebugHelper.isInTest("MyTest#testMethod")`
++* `DebugHelper.isInTest("org.package.MyTest#testMethod")`
+diff --git a/test-framework/docs/README.md b/test-framework/docs/README.md
+index 8d418f1fdc0f..65f55d906584 100644
+--- a/test-framework/docs/README.md
++++ b/test-framework/docs/README.md
+@@ -14,5 +14,6 @@ Tests simply declare what they want, including specific configuration, and the f
+ * [Configuring logging](LOGGING.md) - How to configure logging when running tests
+ * [Using test suites](SUITES.md) - How to use tests suites with custom configuration
+ * [Best practices](BEST_PRACTICES.md) - Best practices and common pitfalls
++* [Debugging](DEBUGGING.md) - Debugging Keycloak and extensions
+ * [Writing extensions](EXTENSIONS.md) - Writing test framework extensions
+ * [GitHub Actions](GITHUB.md) - Support for creating job summary on GitHub Actions
+\ No newline at end of file

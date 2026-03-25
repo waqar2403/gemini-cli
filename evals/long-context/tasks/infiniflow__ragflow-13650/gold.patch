@@ -1,0 +1,1008 @@
+From 0ee6efa5638c892fae73c96e0f9f90be5def5681 Mon Sep 17 00:00:00 2001
+From: seroperson <seroperson@gmail.com>
+Date: Tue, 17 Mar 2026 09:49:18 +0300
+Subject: [PATCH 1/2] feat: .epub parsing
+
+Closes #1398
+---
+ api/utils/file_utils.py                       |   2 +-
+ deepdoc/parser/__init__.py                    |   2 +
+ deepdoc/parser/epub_parser.py                 | 112 +++++++++
+ rag/app/naive.py                              |  10 +-
+ rag/flow/parser/parser.py                     |  27 +++
+ .../deepdoc/parser/test_epub_parser.py        | 226 ++++++++++++++++++
+ 6 files changed, 377 insertions(+), 2 deletions(-)
+ create mode 100644 deepdoc/parser/epub_parser.py
+ create mode 100644 test/unit_test/deepdoc/parser/test_epub_parser.py
+
+diff --git a/api/utils/file_utils.py b/api/utils/file_utils.py
+index e4fbe5e0331..b2d16dee474 100644
+--- a/api/utils/file_utils.py
++++ b/api/utils/file_utils.py
+@@ -64,7 +64,7 @@ def filename_type(filename):
+     if re.match(r".*\.pdf$", filename):
+         return FileType.PDF.value
+ 
+-    if re.match(r".*\.(msg|eml|doc|docx|ppt|pptx|yml|xml|htm|json|jsonl|ldjson|csv|txt|ini|xls|xlsx|wps|rtf|hlp|pages|numbers|key|md|mdx|py|js|java|c|cpp|h|php|go|ts|sh|cs|kt|html|sql)$", filename):
++    if re.match(r".*\.(msg|eml|doc|docx|ppt|pptx|yml|xml|htm|json|jsonl|ldjson|csv|txt|ini|xls|xlsx|wps|rtf|hlp|pages|numbers|key|md|mdx|py|js|java|c|cpp|h|php|go|ts|sh|cs|kt|html|sql|epub)$", filename):
+         return FileType.DOC.value
+ 
+     if re.match(r".*\.(wav|flac|ape|alac|wavpack|wv|mp3|aac|ogg|vorbis|opus)$", filename):
+diff --git a/deepdoc/parser/__init__.py b/deepdoc/parser/__init__.py
+index 809a56edf70..29af50ef5c1 100644
+--- a/deepdoc/parser/__init__.py
++++ b/deepdoc/parser/__init__.py
+@@ -15,6 +15,7 @@
+ #
+ 
+ from .docx_parser import RAGFlowDocxParser as DocxParser
++from .epub_parser import RAGFlowEpubParser as EpubParser
+ from .excel_parser import RAGFlowExcelParser as ExcelParser
+ from .html_parser import RAGFlowHtmlParser as HtmlParser
+ from .json_parser import RAGFlowJsonParser as JsonParser
+@@ -29,6 +30,7 @@
+     "PdfParser",
+     "PlainParser",
+     "DocxParser",
++    "EpubParser",
+     "ExcelParser",
+     "PptParser",
+     "HtmlParser",
+diff --git a/deepdoc/parser/epub_parser.py b/deepdoc/parser/epub_parser.py
+new file mode 100644
+index 00000000000..7f8fbdd82ee
+--- /dev/null
++++ b/deepdoc/parser/epub_parser.py
+@@ -0,0 +1,112 @@
++#
++#  Copyright 2025 The InfiniFlow Authors. All Rights Reserved.
++#
++#  Licensed under the Apache License, Version 2.0 (the "License");
++#  you may not use this file except in compliance with the License.
++#  You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++#  Unless required by applicable law or agreed to in writing, software
++#  distributed under the License is distributed on an "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++#  See the License for the specific language governing permissions and
++#  limitations under the License.
++#
++
++import zipfile
++from io import BytesIO
++from xml.etree import ElementTree
++
++from .html_parser import RAGFlowHtmlParser
++
++# OPF XML namespaces
++_OPF_NS = "http://www.idpf.org/2007/opf"
++_CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
++
++# Media types that contain readable XHTML content
++_XHTML_MEDIA_TYPES = {"application/xhtml+xml", "text/html", "text/xml"}
++
++
++class RAGFlowEpubParser:
++    """Parse EPUB files by extracting XHTML content in spine (reading) order
++    and delegating to RAGFlowHtmlParser for chunking."""
++
++    def __call__(self, fnm, binary=None, chunk_token_num=512):
++        if binary:
++            zf = zipfile.ZipFile(BytesIO(binary))
++        else:
++            zf = zipfile.ZipFile(fnm)
++
++        try:
++            content_items = self._get_spine_items(zf)
++            all_sections = []
++            html_parser = RAGFlowHtmlParser()
++
++            for item_path in content_items:
++                try:
++                    html_bytes = zf.read(item_path)
++                except KeyError:
++                    continue
++                sections = html_parser(item_path, binary=html_bytes, chunk_token_num=chunk_token_num)
++                all_sections.extend(sections)
++
++            return all_sections
++        finally:
++            zf.close()
++
++    @staticmethod
++    def _get_spine_items(zf):
++        """Return content file paths in spine (reading) order."""
++        # 1. Find the OPF file path from META-INF/container.xml
++        try:
++            container_xml = zf.read("META-INF/container.xml")
++        except KeyError:
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
++
++        container_root = ElementTree.fromstring(container_xml)
++        rootfile_el = container_root.find(f".//{{{_CONTAINER_NS}}}rootfile")
++        if rootfile_el is None:
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
++
++        opf_path = rootfile_el.get("full-path", "")
++        if not opf_path:
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
++
++        # Base directory of the OPF file (content paths are relative to it)
++        opf_dir = opf_path.rsplit("/", 1)[0] + "/" if "/" in opf_path else ""
++
++        # 2. Parse the OPF file
++        try:
++            opf_xml = zf.read(opf_path)
++        except KeyError:
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
++
++        opf_root = ElementTree.fromstring(opf_xml)
++
++        # 3. Build id->href+mediatype map from <manifest>
++        manifest = {}
++        for item in opf_root.findall(f".//{{{_OPF_NS}}}item"):
++            item_id = item.get("id", "")
++            href = item.get("href", "")
++            media_type = item.get("media-type", "")
++            if item_id and href:
++                manifest[item_id] = (href, media_type)
++
++        # 4. Walk <spine> to get reading order
++        spine_items = []
++        for itemref in opf_root.findall(f".//{{{_OPF_NS}}}itemref"):
++            idref = itemref.get("idref", "")
++            if idref not in manifest:
++                continue
++            href, media_type = manifest[idref]
++            if media_type not in _XHTML_MEDIA_TYPES:
++                continue
++            spine_items.append(opf_dir + href)
++
++        return spine_items if spine_items else RAGFlowEpubParser._fallback_xhtml_order(zf)
++
++    @staticmethod
++    def _fallback_xhtml_order(zf):
++        """Fallback: return all .xhtml/.html files sorted alphabetically."""
++        return sorted(n for n in zf.namelist() if n.lower().endswith((".xhtml", ".html", ".htm")) and not n.startswith("META-INF/"))
+diff --git a/rag/app/naive.py b/rag/app/naive.py
+index 3eec55df036..f885fcbab2f 100644
+--- a/rag/app/naive.py
++++ b/rag/app/naive.py
+@@ -33,7 +33,7 @@
+ from api.db.services.llm_service import LLMBundle
+ from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name, get_tenant_default_model_by_type
+ from rag.utils.file_utils import extract_embed_file, extract_links_from_pdf, extract_links_from_docx, extract_html
+-from deepdoc.parser import DocxParser, ExcelParser, HtmlParser, JsonParser, MarkdownElementExtractor, MarkdownParser, PdfParser, TxtParser
++from deepdoc.parser import DocxParser, EpubParser, ExcelParser, HtmlParser, JsonParser, MarkdownElementExtractor, MarkdownParser, PdfParser, TxtParser
+ from deepdoc.parser.figure_parser import VisionFigureParser, vision_figure_parser_docx_wrapper_naive, vision_figure_parser_pdf_wrapper
+ from deepdoc.parser.pdf_parser import PlainParser, VisionParser
+ from deepdoc.parser.docling_parser import DoclingParser
+@@ -953,6 +953,14 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
+         sections = _normalize_section_text_for_rtl_presentation_forms(sections)
+         callback(0.8, "Finish parsing.")
+ 
++    elif re.search(r"\.epub$", filename, re.IGNORECASE):
++        callback(0.1, "Start to parse.")
++        chunk_token_num = int(parser_config.get("chunk_token_num", 128))
++        sections = EpubParser()(filename, binary, chunk_token_num)
++        sections = [(_, "") for _ in sections if _]
++        sections = _normalize_section_text_for_rtl_presentation_forms(sections)
++        callback(0.8, "Finish parsing.")
++
+     elif re.search(r"\.(json|jsonl|ldjson)$", filename, re.IGNORECASE):
+         callback(0.1, "Start to parse.")
+         chunk_token_num = int(parser_config.get("chunk_token_num", 128))
+diff --git a/rag/flow/parser/parser.py b/rag/flow/parser/parser.py
+index 3f779e252ca..9e93a783482 100644
+--- a/rag/flow/parser/parser.py
++++ b/rag/flow/parser/parser.py
+@@ -82,6 +82,10 @@ def __init__(self):
+                 "json",
+             ],
+             "video": [],
++            "epub": [
++                "text",
++                "json",
++            ],
+         }
+ 
+         self.setups = {
+@@ -166,6 +170,12 @@ def __init__(self):
+                 "output_format": "text",
+                 "prompt": "",
+             },
++            "epub": {
++                "suffix": [
++                    "epub",
++                ],
++                "output_format": "json",
++            },
+         }
+ 
+     def check(self):
+@@ -1013,6 +1023,22 @@ def _decode_payload(payload, charset, target_list):
+                             content_txt += fb
+             self.set_output("text", content_txt)
+ 
++    def _epub(self, name, blob, **kwargs):
++        from deepdoc.parser import EpubParser
++
++        self.callback(random.randint(1, 5) / 100.0, "Start to work on an EPUB.")
++        conf = self._param.setups["epub"]
++        self.set_output("output_format", conf["output_format"])
++
++        epub_parser = EpubParser()
++        sections = epub_parser(name, binary=blob)
++
++        if conf.get("output_format") == "json":
++            json_results = [{"text": s} for s in sections if s]
++            self.set_output("json", json_results)
++        else:
++            self.set_output("text", "\n".join(s for s in sections if s))
++
+     async def _invoke(self, **kwargs):
+         function_map = {
+             "pdf": self._pdf,
+@@ -1024,6 +1050,7 @@ async def _invoke(self, **kwargs):
+             "audio": self._audio,
+             "video": self._video,
+             "email": self._email,
++            "epub": self._epub,
+         }
+ 
+         try:
+diff --git a/test/unit_test/deepdoc/parser/test_epub_parser.py b/test/unit_test/deepdoc/parser/test_epub_parser.py
+new file mode 100644
+index 00000000000..9daf98d581f
+--- /dev/null
++++ b/test/unit_test/deepdoc/parser/test_epub_parser.py
+@@ -0,0 +1,226 @@
++#
++#  Copyright 2025 The InfiniFlow Authors. All Rights Reserved.
++#
++#  Licensed under the Apache License, Version 2.0 (the "License");
++#  you may not use this file except in compliance with the License.
++#  You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++#  Unless required by applicable law or agreed to in writing, software
++#  distributed under the License is distributed on an "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++#  See the License for the specific language governing permissions and
++#  limitations under the License.
++#
++
++"""Unit tests for the EPUB parser.
++
++Tests cover:
++- Parsing a well-formed EPUB with OPF spine ordering
++- Fallback parsing when META-INF/container.xml is missing
++- Handling of empty or content-less EPUB files
++- Spine ordering respects the OPF itemref sequence
++"""
++
++import sys
++import zipfile
++from io import BytesIO
++from unittest import mock
++
++# Avoid importing heavy transitive dependencies (xgboost, etc.) that may not
++# be available in the test environment.  We only need html_parser, so we stub
++# the problematic modules before the epub_parser import triggers __init__.
++_STUBS = {}
++for _mod in ("xgboost",):
++    if _mod not in sys.modules:
++        _STUBS[_mod] = mock.MagicMock()
++        sys.modules[_mod] = _STUBS[_mod]
++
++from deepdoc.parser.epub_parser import RAGFlowEpubParser
++
++
++def _make_epub(chapters, include_container=True, spine_order=None):
++    """Build a minimal EPUB ZIP in memory.
++
++    Args:
++        chapters: list of (filename, html_content) tuples.
++        include_container: whether to include META-INF/container.xml.
++        spine_order: optional list of filenames for spine ordering.
++                     Defaults to the order of `chapters`.
++    """
++    buf = BytesIO()
++    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
++        zf.writestr("mimetype", "application/epub+zip")
++
++        if include_container:
++            container_xml = (
++                '<?xml version="1.0" encoding="UTF-8"?>'
++                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
++                "  <rootfiles>"
++                '    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
++                "  </rootfiles>"
++                "</container>"
++            )
++            zf.writestr("META-INF/container.xml", container_xml)
++
++            if spine_order is None:
++                spine_order = [fn for fn, _ in chapters]
++
++            manifest_items = ""
++            for i, (fn, _) in enumerate(chapters):
++                manifest_items += f'<item id="ch{i}" href="{fn}" media-type="application/xhtml+xml"/>'
++
++            spine_refs = ""
++            fn_to_id = {fn: f"ch{i}" for i, (fn, _) in enumerate(chapters)}
++            for fn in spine_order:
++                spine_refs += f'<itemref idref="{fn_to_id[fn]}"/>'
++
++            opf_xml = (
++                f'<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">  <manifest>{manifest_items}</manifest>  <spine>{spine_refs}</spine></package>'
++            )
++            zf.writestr("OEBPS/content.opf", opf_xml)
++
++        for fn, content in chapters:
++            path = f"OEBPS/{fn}" if include_container else fn
++            zf.writestr(path, content)
++
++    return buf.getvalue()
++
++
++def _simple_html(body_text):
++    return f"<?xml version='1.0' encoding='utf-8'?><html xmlns='http://www.w3.org/1999/xhtml'><head><title>Test</title></head><body><p>{body_text}</p></body></html>"
++
++
++class TestEpubParserBasic:
++    def test_parse_single_chapter(self):
++        epub_bytes = _make_epub([("ch1.xhtml", _simple_html("Hello World"))])
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        assert len(sections) >= 1
++        combined = " ".join(sections)
++        assert "Hello World" in combined
++
++    def test_parse_multiple_chapters(self):
++        chapters = [
++            ("ch1.xhtml", _simple_html("Chapter One")),
++            ("ch2.xhtml", _simple_html("Chapter Two")),
++            ("ch3.xhtml", _simple_html("Chapter Three")),
++        ]
++        epub_bytes = _make_epub(chapters)
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Chapter One" in combined
++        assert "Chapter Two" in combined
++        assert "Chapter Three" in combined
++
++    def test_spine_ordering(self):
++        """Chapters should be returned in spine order, not filename order."""
++        chapters = [
++            ("ch1.xhtml", _simple_html("First")),
++            ("ch2.xhtml", _simple_html("Second")),
++            ("ch3.xhtml", _simple_html("Third")),
++        ]
++        # Reverse the spine order
++        epub_bytes = _make_epub(chapters, spine_order=["ch3.xhtml", "ch1.xhtml", "ch2.xhtml"])
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        combined = " ".join(sections)
++        # "Third" should appear before "First" in combined output
++        assert combined.index("Third") < combined.index("First")
++        assert combined.index("First") < combined.index("Second")
++
++    def test_empty_epub(self):
++        epub_bytes = _make_epub([])
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        assert sections == []
++
++
++class TestEpubParserFallback:
++    def test_fallback_without_container(self):
++        """When META-INF/container.xml is missing, should fall back to finding .xhtml files."""
++        chapters = [
++            ("chapter1.xhtml", _simple_html("Fallback Content")),
++        ]
++        epub_bytes = _make_epub(chapters, include_container=False)
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Fallback Content" in combined
++
++
++class TestEpubParserEdgeCases:
++    def test_non_xhtml_spine_items_skipped(self):
++        """Non-XHTML items in the spine should be skipped."""
++        buf = BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("mimetype", "application/epub+zip")
++            container_xml = (
++                '<?xml version="1.0"?>'
++                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
++                "  <rootfiles>"
++                '    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
++                "  </rootfiles>"
++                "</container>"
++            )
++            zf.writestr("META-INF/container.xml", container_xml)
++            opf_xml = (
++                '<?xml version="1.0"?>'
++                '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
++                "  <manifest>"
++                '    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
++                '    <item id="img1" href="cover.png" media-type="image/png"/>'
++                "  </manifest>"
++                "  <spine>"
++                '    <itemref idref="ch1"/>'
++                '    <itemref idref="img1"/>'
++                "  </spine>"
++                "</package>"
++            )
++            zf.writestr("content.opf", opf_xml)
++            zf.writestr("ch1.xhtml", _simple_html("Real Content"))
++            zf.writestr("cover.png", b"\x89PNG fake image data")
++
++        epub_bytes = buf.getvalue()
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Real Content" in combined
++
++    def test_missing_spine_file(self):
++        """If a spine item references a file not in the ZIP, it should be skipped."""
++        buf = BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("mimetype", "application/epub+zip")
++            container_xml = (
++                '<?xml version="1.0"?>'
++                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
++                "  <rootfiles>"
++                '    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
++                "  </rootfiles>"
++                "</container>"
++            )
++            zf.writestr("META-INF/container.xml", container_xml)
++            opf_xml = (
++                '<?xml version="1.0"?>'
++                '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
++                "  <manifest>"
++                '    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
++                '    <item id="ch2" href="missing.xhtml" media-type="application/xhtml+xml"/>'
++                "  </manifest>"
++                "  <spine>"
++                '    <itemref idref="ch1"/>'
++                '    <itemref idref="ch2"/>'
++                "  </spine>"
++                "</package>"
++            )
++            zf.writestr("content.opf", opf_xml)
++            zf.writestr("ch1.xhtml", _simple_html("Existing Chapter"))
++
++        epub_bytes = buf.getvalue()
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=epub_bytes, chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Existing Chapter" in combined
+
+From 0bfbcbbb0d38c6bf0a330b7cc3b6e480924f09ee Mon Sep 17 00:00:00 2001
+From: seroperson <seroperson@gmail.com>
+Date: Tue, 17 Mar 2026 12:42:21 +0300
+Subject: [PATCH 2/2] Applying Mr.Copilot edits
+
+---
+ api/utils/file_utils.py                       |  12 +-
+ deepdoc/parser/__init__.py                    |   1 -
+ deepdoc/parser/epub_parser.py                 |  45 +++++-
+ rag/flow/parser/parser.py                     |  25 +--
+ .../api/utils/test_api_file_utils.py          |  69 +++++----
+ .../deepdoc/parser/test_epub_parser.py        | 146 ++++++++++++++++--
+ 6 files changed, 239 insertions(+), 59 deletions(-)
+
+diff --git a/api/utils/file_utils.py b/api/utils/file_utils.py
+index b2d16dee474..857cf17381d 100644
+--- a/api/utils/file_utils.py
++++ b/api/utils/file_utils.py
+@@ -35,8 +35,8 @@
+ 
+ # Robustness and resource limits: reject oversized inputs to avoid DoS and OOM.
+ MAX_BLOB_SIZE_THUMBNAIL = 50 * 1024 * 1024  # 50 MiB for thumbnail generation
+-MAX_BLOB_SIZE_PDF = 100 * 1024 * 1024       # 100 MiB for PDF repair / read
+-GHOSTSCRIPT_TIMEOUT_SEC = 120                # Timeout for Ghostscript subprocess
++MAX_BLOB_SIZE_PDF = 100 * 1024 * 1024  # 100 MiB for PDF repair / read
++GHOSTSCRIPT_TIMEOUT_SEC = 120  # Timeout for Ghostscript subprocess
+ 
+ LOCK_KEY_pdfplumber = "global_shared_lock_pdfplumber"
+ if LOCK_KEY_pdfplumber not in sys.modules:
+@@ -64,13 +64,17 @@ def filename_type(filename):
+     if re.match(r".*\.pdf$", filename):
+         return FileType.PDF.value
+ 
+-    if re.match(r".*\.(msg|eml|doc|docx|ppt|pptx|yml|xml|htm|json|jsonl|ldjson|csv|txt|ini|xls|xlsx|wps|rtf|hlp|pages|numbers|key|md|mdx|py|js|java|c|cpp|h|php|go|ts|sh|cs|kt|html|sql|epub)$", filename):
++    if re.match(
++        r".*\.(msg|eml|doc|docx|ppt|pptx|yml|xml|htm|json|jsonl|ldjson|csv|txt|ini|xls|xlsx|wps|rtf|hlp|pages|numbers|key|md|mdx|py|js|java|c|cpp|h|php|go|ts|sh|cs|kt|html|sql|epub)$", filename
++    ):
+         return FileType.DOC.value
+ 
+     if re.match(r".*\.(wav|flac|ape|alac|wavpack|wv|mp3|aac|ogg|vorbis|opus)$", filename):
+         return FileType.AURAL.value
+ 
+-    if re.match(r".*\.(jpg|jpeg|png|tif|gif|pcx|tga|exif|fpx|svg|psd|cdr|pcd|dxf|ufo|eps|ai|raw|WMF|webp|avif|apng|icon|ico|mpg|mpeg|avi|rm|rmvb|mov|wmv|asf|dat|asx|wvx|mpe|mpa|mp4|avi|mkv)$", filename):
++    if re.match(
++        r".*\.(jpg|jpeg|png|tif|gif|pcx|tga|exif|fpx|svg|psd|cdr|pcd|dxf|ufo|eps|ai|raw|WMF|webp|avif|apng|icon|ico|mpg|mpeg|avi|rm|rmvb|mov|wmv|asf|dat|asx|wvx|mpe|mpa|mp4|avi|mkv)$", filename
++    ):
+         return FileType.VISUAL.value
+ 
+     return FileType.OTHER.value
+diff --git a/deepdoc/parser/__init__.py b/deepdoc/parser/__init__.py
+index 29af50ef5c1..a34b1de0f39 100644
+--- a/deepdoc/parser/__init__.py
++++ b/deepdoc/parser/__init__.py
+@@ -39,4 +39,3 @@
+     "TxtParser",
+     "MarkdownElementExtractor",
+ ]
+-
+diff --git a/deepdoc/parser/epub_parser.py b/deepdoc/parser/epub_parser.py
+index 7f8fbdd82ee..5badd7c33b6 100644
+--- a/deepdoc/parser/epub_parser.py
++++ b/deepdoc/parser/epub_parser.py
+@@ -14,6 +14,8 @@
+ #  limitations under the License.
+ #
+ 
++import logging
++import warnings
+ import zipfile
+ from io import BytesIO
+ from xml.etree import ElementTree
+@@ -27,13 +29,21 @@
+ # Media types that contain readable XHTML content
+ _XHTML_MEDIA_TYPES = {"application/xhtml+xml", "text/html", "text/xml"}
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ class RAGFlowEpubParser:
+     """Parse EPUB files by extracting XHTML content in spine (reading) order
+     and delegating to RAGFlowHtmlParser for chunking."""
+ 
+     def __call__(self, fnm, binary=None, chunk_token_num=512):
+-        if binary:
++        if binary is not None:
++            if not binary:
++                logger.warning(
++                    "RAGFlowEpubParser received an empty EPUB binary payload for %r",
++                    fnm,
++                )
++                raise ValueError("Empty EPUB binary payload")
+             zf = zipfile.ZipFile(BytesIO(binary))
+         else:
+             zf = zipfile.ZipFile(fnm)
+@@ -48,7 +58,14 @@ def __call__(self, fnm, binary=None, chunk_token_num=512):
+                     html_bytes = zf.read(item_path)
+                 except KeyError:
+                     continue
+-                sections = html_parser(item_path, binary=html_bytes, chunk_token_num=chunk_token_num)
++                if not html_bytes:
++                    logger.debug("Skipping empty EPUB content item: %s", item_path)
++                    continue
++                with warnings.catch_warnings():
++                    warnings.filterwarnings("ignore", category=UserWarning)
++                    sections = html_parser(
++                        item_path, binary=html_bytes, chunk_token_num=chunk_token_num
++                    )
+                 all_sections.extend(sections)
+ 
+             return all_sections
+@@ -64,7 +81,12 @@ def _get_spine_items(zf):
+         except KeyError:
+             return RAGFlowEpubParser._fallback_xhtml_order(zf)
+ 
+-        container_root = ElementTree.fromstring(container_xml)
++        try:
++            container_root = ElementTree.fromstring(container_xml)
++        except ElementTree.ParseError:
++            logger.warning("Failed to parse META-INF/container.xml; falling back to XHTML order.")
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
++
+         rootfile_el = container_root.find(f".//{{{_CONTAINER_NS}}}rootfile")
+         if rootfile_el is None:
+             return RAGFlowEpubParser._fallback_xhtml_order(zf)
+@@ -82,7 +104,11 @@ def _get_spine_items(zf):
+         except KeyError:
+             return RAGFlowEpubParser._fallback_xhtml_order(zf)
+ 
+-        opf_root = ElementTree.fromstring(opf_xml)
++        try:
++            opf_root = ElementTree.fromstring(opf_xml)
++        except ElementTree.ParseError:
++            logger.warning("Failed to parse OPF file '%s'; falling back to XHTML order.", opf_path)
++            return RAGFlowEpubParser._fallback_xhtml_order(zf)
+ 
+         # 3. Build id->href+mediatype map from <manifest>
+         manifest = {}
+@@ -104,9 +130,16 @@ def _get_spine_items(zf):
+                 continue
+             spine_items.append(opf_dir + href)
+ 
+-        return spine_items if spine_items else RAGFlowEpubParser._fallback_xhtml_order(zf)
++        return (
++            spine_items if spine_items else RAGFlowEpubParser._fallback_xhtml_order(zf)
++        )
+ 
+     @staticmethod
+     def _fallback_xhtml_order(zf):
+         """Fallback: return all .xhtml/.html files sorted alphabetically."""
+-        return sorted(n for n in zf.namelist() if n.lower().endswith((".xhtml", ".html", ".htm")) and not n.startswith("META-INF/"))
++        return sorted(
++            n
++            for n in zf.namelist()
++            if n.lower().endswith((".xhtml", ".html", ".htm"))
++            and not n.startswith("META-INF/")
++        )
+diff --git a/rag/flow/parser/parser.py b/rag/flow/parser/parser.py
+index 9e93a783482..0803ddef708 100644
+--- a/rag/flow/parser/parser.py
++++ b/rag/flow/parser/parser.py
+@@ -43,10 +43,9 @@
+ from rag.utils.base64_image import image2id
+ 
+ 
+-
+-
+ from common.misc_utils import thread_pool_exec
+ 
++
+ class ParserParam(ProcessParamBase):
+     def __init__(self):
+         super().__init__()
+@@ -229,6 +228,11 @@ def check(self):
+             email_output_format = email_config.get("output_format", "")
+             self.check_valid_value(email_output_format, "Email output format abnormal.", self.allowed_output_format["email"])
+ 
++        epub_config = self.setups.get("epub", "")
++        if epub_config:
++            epub_output_format = epub_config.get("output_format", "")
++            self.check_valid_value(epub_output_format, "EPUB output format abnormal.", self.allowed_output_format["epub"])
++
+     def get_input_form(self) -> dict[str, dict]:
+         return {}
+ 
+@@ -400,9 +404,7 @@ def resolve_mineru_llm_name():
+                 box = {
+                     "text": text,
+                     "image": pdf_parser.crop(poss, 1) if isinstance(poss, str) and poss else None,
+-                    "positions": [[pos[0][-1], *pos[1:]] for pos in pdf_parser.extract_positions(poss)]
+-                    if isinstance(poss, str) and poss
+-                    else [],
++                    "positions": [[pos[0][-1], *pos[1:]] for pos in pdf_parser.extract_positions(poss)] if isinstance(poss, str) and poss else [],
+                 }
+                 bboxes.append(box)
+         elif parse_method.lower() == "tcadp parser":
+@@ -708,7 +710,6 @@ def _word(self, name, blob, **kwargs):
+             markdown_text = docx_parser.to_markdown(name, binary=blob)
+             self.set_output("markdown", markdown_text)
+ 
+-
+     def _slides(self, name, blob, **kwargs):
+         self.callback(random.randint(1, 5) / 100.0, "Start to work on a PowerPoint Document")
+ 
+@@ -849,11 +850,13 @@ def _image(self, name, blob, **kwargs):
+             else:
+                 txt = cv_model.describe(img_binary.read())
+ 
+-        json_result = [{
+-            "text": txt,
+-            "image": img,
+-            "doc_type_kwd": "image",
+-        }]
++        json_result = [
++            {
++                "text": txt,
++                "image": img,
++                "doc_type_kwd": "image",
++            }
++        ]
+         self.set_output("json", json_result)
+ 
+     def _audio(self, name, blob, **kwargs):
+diff --git a/test/unit_test/api/utils/test_api_file_utils.py b/test/unit_test/api/utils/test_api_file_utils.py
+index 65e1ce14cb4..b47aea383ed 100644
+--- a/test/unit_test/api/utils/test_api_file_utils.py
++++ b/test/unit_test/api/utils/test_api_file_utils.py
+@@ -34,24 +34,33 @@
+ class TestFilenameType:
+     """Edge cases and robustness for filename_type."""
+ 
+-    @pytest.mark.parametrize("filename,expected", [
+-        ("doc.pdf", FileType.PDF.value),
+-        ("a.PDF", FileType.PDF.value),
+-        ("x.png", FileType.VISUAL.value),
+-        ("file.docx", FileType.DOC.value),
+-        ("a/b/c.pdf", FileType.PDF.value),
+-        ("path/to/file.txt", FileType.DOC.value),
+-    ])
++    @pytest.mark.parametrize(
++        "filename,expected",
++        [
++            ("doc.pdf", FileType.PDF.value),
++            ("a.PDF", FileType.PDF.value),
++            ("x.png", FileType.VISUAL.value),
++            ("file.docx", FileType.DOC.value),
++            ("a/b/c.pdf", FileType.PDF.value),
++            ("path/to/file.txt", FileType.DOC.value),
++            ("book.epub", FileType.DOC.value),
++            ("BOOK.EPUB", FileType.DOC.value),
++            ("path/to/book.epub", FileType.DOC.value),
++        ],
++    )
+     def test_valid_filenames(self, filename, expected):
+         assert filename_type(filename) == expected
+ 
+-    @pytest.mark.parametrize("filename", [
+-        None,
+-        "",
+-        "   ",
+-        123,
+-        [],
+-    ])
++    @pytest.mark.parametrize(
++        "filename",
++        [
++            None,
++            "",
++            "   ",
++            123,
++            [],
++        ],
++    )
+     def test_invalid_or_empty_returns_other(self, filename):
+         assert filename_type(filename) == FileType.OTHER.value
+ 
+@@ -62,16 +71,19 @@ def test_path_with_basename_uses_extension(self):
+ class TestSanitizePath:
+     """Edge cases for sanitize_path."""
+ 
+-    @pytest.mark.parametrize("raw,expected", [
+-        (None, ""),
+-        ("", ""),
+-        ("  ", ""),
+-        (42, ""),
+-        ("a/b", "a/b"),
+-        ("a/../b", "a/b"),
+-        ("/leading/", "leading"),
+-        ("\\mixed\\path", "mixed/path"),
+-    ])
++    @pytest.mark.parametrize(
++        "raw,expected",
++        [
++            (None, ""),
++            ("", ""),
++            ("  ", ""),
++            (42, ""),
++            ("a/b", "a/b"),
++            ("a/../b", "a/b"),
++            ("/leading/", "leading"),
++            ("\\mixed\\path", "mixed/path"),
++        ],
++    )
+     def test_sanitize_cases(self, raw, expected):
+         assert sanitize_path(raw) == expected
+ 
+@@ -88,6 +100,7 @@ def test_empty_bytes_returns_as_is(self):
+     def test_non_len_raises_or_returns_empty(self):
+         class NoLen:
+             pass
++
+         result = read_potential_broken_pdf(NoLen())
+         assert result == b""
+ 
+@@ -120,7 +133,11 @@ def test_none_img_returns_empty_string(self):
+ 
+     def test_valid_img_returns_base64_prefix(self):
+         from api.constants import IMG_BASE64_PREFIX
+-        result = thumbnail("x.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
++
++        result = thumbnail(
++            "x.png",
++            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82",
++        )
+         assert result.startswith(IMG_BASE64_PREFIX) or result == ""
+ 
+ 
+diff --git a/test/unit_test/deepdoc/parser/test_epub_parser.py b/test/unit_test/deepdoc/parser/test_epub_parser.py
+index 9daf98d581f..6b75126ca00 100644
+--- a/test/unit_test/deepdoc/parser/test_epub_parser.py
++++ b/test/unit_test/deepdoc/parser/test_epub_parser.py
+@@ -21,23 +21,69 @@
+ - Fallback parsing when META-INF/container.xml is missing
+ - Handling of empty or content-less EPUB files
+ - Spine ordering respects the OPF itemref sequence
++- Malformed XML graceful fallback
++- Empty binary input handling
+ """
+ 
++import importlib.util
++import os
+ import sys
+ import zipfile
+ from io import BytesIO
+ from unittest import mock
+ 
+-# Avoid importing heavy transitive dependencies (xgboost, etc.) that may not
+-# be available in the test environment.  We only need html_parser, so we stub
+-# the problematic modules before the epub_parser import triggers __init__.
+-_STUBS = {}
+-for _mod in ("xgboost",):
+-    if _mod not in sys.modules:
+-        _STUBS[_mod] = mock.MagicMock()
+-        sys.modules[_mod] = _STUBS[_mod]
++# Import RAGFlowEpubParser directly by file path to avoid triggering
++# deepdoc/parser/__init__.py which pulls in heavy dependencies
++# (pdfplumber, xgboost, etc.) that may not be available in test environments.
++_MOCK_MODULES = [
++    "xgboost",
++    "xgb",
++    "pdfplumber",
++    "huggingface_hub",
++    "PIL",
++    "PIL.Image",
++    "pypdf",
++    "sklearn",
++    "sklearn.cluster",
++    "sklearn.metrics",
++    "deepdoc.vision",
++    "infinity",
++    "infinity.rag_tokenizer",
++]
++for _m in _MOCK_MODULES:
++    if _m not in sys.modules:
++        sys.modules[_m] = mock.MagicMock()
+ 
+-from deepdoc.parser.epub_parser import RAGFlowEpubParser
++
++def _find_project_root(marker="pyproject.toml"):
++    d = os.path.dirname(os.path.abspath(__file__))
++    while d != os.path.dirname(d):
++        if os.path.exists(os.path.join(d, marker)):
++            return d
++        d = os.path.dirname(d)
++    return None
++
++
++_PROJECT_ROOT = _find_project_root()
++
++# Load html_parser first (epub_parser depends on it via relative import)
++_html_spec = importlib.util.spec_from_file_location(
++    "deepdoc.parser.html_parser",
++    os.path.join(_PROJECT_ROOT, "deepdoc", "parser", "html_parser.py"),
++)
++_html_mod = importlib.util.module_from_spec(_html_spec)
++sys.modules["deepdoc.parser.html_parser"] = _html_mod
++_html_spec.loader.exec_module(_html_mod)
++
++_epub_spec = importlib.util.spec_from_file_location(
++    "deepdoc.parser.epub_parser",
++    os.path.join(_PROJECT_ROOT, "deepdoc", "parser", "epub_parser.py"),
++)
++_epub_mod = importlib.util.module_from_spec(_epub_spec)
++sys.modules["deepdoc.parser.epub_parser"] = _epub_mod
++_epub_spec.loader.exec_module(_epub_mod)
++
++RAGFlowEpubParser = _epub_mod.RAGFlowEpubParser
+ 
+ 
+ def _make_epub(chapters, include_container=True, spine_order=None):
+@@ -122,12 +168,10 @@ def test_spine_ordering(self):
+             ("ch2.xhtml", _simple_html("Second")),
+             ("ch3.xhtml", _simple_html("Third")),
+         ]
+-        # Reverse the spine order
+         epub_bytes = _make_epub(chapters, spine_order=["ch3.xhtml", "ch1.xhtml", "ch2.xhtml"])
+         parser = RAGFlowEpubParser()
+         sections = parser(None, binary=epub_bytes, chunk_token_num=512)
+         combined = " ".join(sections)
+-        # "Third" should appear before "First" in combined output
+         assert combined.index("Third") < combined.index("First")
+         assert combined.index("First") < combined.index("Second")
+ 
+@@ -137,6 +181,15 @@ def test_empty_epub(self):
+         sections = parser(None, binary=epub_bytes, chunk_token_num=512)
+         assert sections == []
+ 
++    def test_empty_binary(self):
++        """Empty bytes should raise ValueError, not trigger file open."""
++        parser = RAGFlowEpubParser()
++        try:
++            parser(None, binary=b"", chunk_token_num=512)
++            assert False, "Expected ValueError for empty binary"
++        except ValueError:
++            pass
++
+ 
+ class TestEpubParserFallback:
+     def test_fallback_without_container(self):
+@@ -150,6 +203,41 @@ def test_fallback_without_container(self):
+         combined = " ".join(sections)
+         assert "Fallback Content" in combined
+ 
++    def test_fallback_on_malformed_container_xml(self):
++        """Malformed container.xml should fall back, not raise."""
++        buf = BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("mimetype", "application/epub+zip")
++            zf.writestr("META-INF/container.xml", "THIS IS NOT XML <><><>")
++            zf.writestr("chapter.xhtml", _simple_html("Recovered Content"))
++
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=buf.getvalue(), chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Recovered Content" in combined
++
++    def test_fallback_on_malformed_opf_xml(self):
++        """Malformed OPF file should fall back, not raise."""
++        buf = BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("mimetype", "application/epub+zip")
++            container_xml = (
++                '<?xml version="1.0"?>'
++                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
++                "  <rootfiles>"
++                '    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
++                "  </rootfiles>"
++                "</container>"
++            )
++            zf.writestr("META-INF/container.xml", container_xml)
++            zf.writestr("content.opf", "BROKEN OPF {{{")
++            zf.writestr("chapter.xhtml", _simple_html("OPF Fallback"))
++
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=buf.getvalue(), chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "OPF Fallback" in combined
++
+ 
+ class TestEpubParserEdgeCases:
+     def test_non_xhtml_spine_items_skipped(self):
+@@ -224,3 +312,39 @@ def test_missing_spine_file(self):
+         sections = parser(None, binary=epub_bytes, chunk_token_num=512)
+         combined = " ".join(sections)
+         assert "Existing Chapter" in combined
++
++    def test_empty_xhtml_file_skipped(self):
++        """Empty XHTML files in the EPUB should be skipped without error."""
++        buf = BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("mimetype", "application/epub+zip")
++            container_xml = (
++                '<?xml version="1.0"?>'
++                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
++                "  <rootfiles>"
++                '    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
++                "  </rootfiles>"
++                "</container>"
++            )
++            zf.writestr("META-INF/container.xml", container_xml)
++            opf_xml = (
++                '<?xml version="1.0"?>'
++                '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
++                "  <manifest>"
++                '    <item id="ch1" href="empty.xhtml" media-type="application/xhtml+xml"/>'
++                '    <item id="ch2" href="real.xhtml" media-type="application/xhtml+xml"/>'
++                "  </manifest>"
++                "  <spine>"
++                '    <itemref idref="ch1"/>'
++                '    <itemref idref="ch2"/>'
++                "  </spine>"
++                "</package>"
++            )
++            zf.writestr("content.opf", opf_xml)
++            zf.writestr("empty.xhtml", b"")
++            zf.writestr("real.xhtml", _simple_html("Has Content"))
++
++        parser = RAGFlowEpubParser()
++        sections = parser(None, binary=buf.getvalue(), chunk_token_num=512)
++        combined = " ".join(sections)
++        assert "Has Content" in combined

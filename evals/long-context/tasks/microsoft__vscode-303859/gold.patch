@@ -1,0 +1,601 @@
+From 9ead06be49ff60deb473617692389ad2c0ad37fe Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Sun, 22 Mar 2026 14:37:05 +0100
+Subject: [PATCH 1/5] fix: command rewriting issues when terminal sandboxing is
+ enabled
+
+Fixes two issues with sandboxed terminal commands:
+
+1. Sandboxed commands end up in shell history (#303769): The
+   PreventHistoryRewriter was running before SandboxRewriter, so the
+   leading space was applied to the inner command but not the final
+   sandbox-wrapped command. Moved PreventHistoryRewriter to run last.
+
+2. cd CWD prefix not stripped in sandbox mode (#303848): The
+   SandboxedCommandLinePresenter was using the original (un-rewritten)
+   command for display, bypassing cd prefix stripping. Changed to use
+   forDisplay instead.
+
+3. Fixed forDisplay being clobbered: The rewriter loop unconditionally
+   overwrote forDisplay, so later rewriters without a forDisplay
+   (like PreventHistoryRewriter) would clear the sandbox's display
+   value. Changed to only update when explicitly provided.
+
+Fixes #303769
+Fixes #303848
+---
+ .../src/singlefolder-tests/chat.runInTerminal.test.ts |  1 -
+ .../sandboxedCommandLinePresenter.ts                  |  2 +-
+ .../commandLineRewriter/commandLineSandboxRewriter.ts |  2 +-
+ .../chatAgentTools/browser/tools/runInTerminalTool.ts |  6 ++++--
+ .../browser/sandboxedCommandLinePresenter.test.ts     | 11 +++++++++++
+ 5 files changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts b/extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts
+index 39008b8be3bf9..a441b68f11144 100644
+--- a/extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts
++++ b/extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts
+@@ -24,7 +24,6 @@ function extractTextContent(result: vscode.LanguageModelToolResult): string {
+ 		.join('');
+ }
+ 
+-// https://github.com/microsoft/vscode/issues/303531
+ (vscode.env.uiKind === vscode.UIKind.Web ? suite.skip : suite)('chat - run_in_terminal', () => {
+ 
+ 	let disposables: vscode.Disposable[] = [];
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
+index d2b094e6aec79..46c57f9a2c445 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
+@@ -22,7 +22,7 @@ export class SandboxedCommandLinePresenter implements ICommandLinePresenter {
+ 			return undefined;
+ 		}
+ 		return {
+-			commandLine: options.commandLine.original ?? options.commandLine.forDisplay,
++			commandLine: options.commandLine.forDisplay,
+ 			processOtherPresenters: true
+ 		};
+ 	}
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts
+index 2d147f7eebf62..db6e961052696 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts
+@@ -34,7 +34,7 @@ export class CommandLineSandboxRewriter extends Disposable implements ICommandLi
+ 		return {
+ 			rewritten: wrappedCommand,
+ 			reasoning: 'Wrapped command for sandbox execution',
+-			forDisplay: options.commandLine, // show the command that is passed as input. In this case, the output from CommandLinePreventHistoryRewriter
++			forDisplay: options.commandLine, // show the command that is passed as input (after prior rewrites like cd prefix stripping)
+ 			isSandboxWrapped: true,
+ 		};
+ 	}
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+index 29a02e9d0060a..0c94307b84269 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+@@ -470,11 +470,13 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 		this._commandLineRewriters = [
+ 			this._register(this._instantiationService.createInstance(CommandLineCdPrefixRewriter)),
+ 			this._register(this._instantiationService.createInstance(CommandLinePwshChainOperatorRewriter, this._treeSitterCommandParser)),
+-			this._register(this._instantiationService.createInstance(CommandLinePreventHistoryRewriter)),
+ 		];
+ 		if (this._enableCommandLineSandboxRewriting) {
+ 			this._commandLineRewriters.push(this._register(this._instantiationService.createInstance(CommandLineSandboxRewriter)));
+ 		}
++		// PreventHistoryRewriter must be last so the leading space is applied to the final
++		// command, including any sandbox wrapping.
++		this._commandLineRewriters.push(this._register(this._instantiationService.createInstance(CommandLinePreventHistoryRewriter)));
+ 		this._commandLineAnalyzers = [
+ 			this._register(this._instantiationService.createInstance(CommandLineFileWriteAnalyzer, this._treeSitterCommandParser, (message, args) => this._logService.info(`RunInTerminalTool#CommandLineFileWriteAnalyzer: ${message}`, args))),
+ 			this._register(this._instantiationService.createInstance(CommandLineAutoApproveAnalyzer, this._treeSitterCommandParser, this._telemetry, (message, args) => this._logService.info(`RunInTerminalTool#CommandLineAutoApproveAnalyzer: ${message}`, args))),
+@@ -574,7 +576,7 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 			});
+ 			if (rewriteResult) {
+ 				rewrittenCommand = rewriteResult.rewritten;
+-				forDisplayCommand = rewriteResult.forDisplay;
++				forDisplayCommand = rewriteResult.forDisplay ?? forDisplayCommand;
+ 				if (rewriteResult.isSandboxWrapped) {
+ 					isSandboxWrapped = true;
+ 				}
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts
+index b1a8fed729a73..e3e2cca256fe1 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts
+@@ -56,6 +56,17 @@ suite('SandboxedCommandLinePresenter', () => {
+ 		strictEqual(result.languageDisplayName, undefined);
+ 	});
+ 
++	test('should use forDisplay over original when both are provided', async () => {
++		const presenter = createPresenter();
++		const result = await presenter.present({
++			commandLine: { original: 'cd /some/path && ls -lh', forDisplay: 'ls -lh' },
++			shell: 'bash',
++			os: OperatingSystem.Linux
++		});
++		ok(result);
++		strictEqual(result.commandLine, 'ls -lh');
++	});
++
+ 	test('should return undefined when sandboxing is disabled', async () => {
+ 		const presenter = createPresenter(false);
+ 		const result = await presenter.present({
+
+From 8adda75afd59b21adc483e154d390a63ec08cc26 Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Sun, 22 Mar 2026 14:49:27 +0100
+Subject: [PATCH 2/5] update doc comment for SandboxedCommandLinePresenter
+
+---
+ .../commandLinePresenter/sandboxedCommandLinePresenter.ts    | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
+index 46c57f9a2c445..06c7776bf469f 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts
+@@ -8,8 +8,9 @@ import type { ICommandLinePresenter, ICommandLinePresenterOptions, ICommandLineP
+ 
+ /**
+  * Command line presenter for sandboxed commands.
+- * Extracts the original command from the sandbox wrapper for cleaner display,
+- * while the actual sandboxed command runs unchanged.
++ * Returns the display form of the command (provided via {@link ICommandLineRewriterResult.forDisplay}
++ * from the rewriter pipeline) for cleaner presentation, while the actual sandboxed command runs
++ * unchanged.
+  */
+ export class SandboxedCommandLinePresenter implements ICommandLinePresenter {
+ 	constructor(
+
+From 126b1fc46e74622441e4c641f767ea30b204c033 Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Sun, 22 Mar 2026 15:32:41 +0100
+Subject: [PATCH 3/5] improve execute strategy logging for CI diagnostics
+
+Upgrade strategy selection and completion logs to info level in
+runInTerminalTool. In richExecuteStrategy, log at info level when
+running in CI (for diagnosing shell integration race conditions)
+and debug otherwise.
+---
+ .../browser/executeStrategy/richExecuteStrategy.ts        | 8 +++++++-
+ .../chatAgentTools/browser/tools/runInTerminalTool.ts     | 4 ++--
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts
+index a4c896596ac21..8d97c97f85911 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts
+@@ -9,6 +9,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
+ import { Disposable, DisposableStore, MutableDisposable } from '../../../../../../base/common/lifecycle.js';
+ import { isNumber } from '../../../../../../base/common/types.js';
+ import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
++import { isCI } from '../../../../../../base/common/platform.js';
+ import type { ICommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
+ import { ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
+ import type { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
+@@ -158,6 +159,11 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
+ 	}
+ 
+ 	private _log(message: string) {
+-		this._logService.debug(`RunInTerminalTool#Rich: ${message}`);
++		const msg = `RunInTerminalTool#Rich: ${message}`;
++		if (isCI) {
++			this._logService.info(msg);
++		} else {
++			this._logService.debug(msg);
++		}
+ 	}
+ }
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+index e8b27e1c9c597..4d54022acb7c5 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+@@ -996,7 +996,7 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 			if (toolTerminal.shellIntegrationQuality === ShellIntegrationQuality.None) {
+ 				toolResultMessage = '$(info) Enable [shell integration](https://code.visualstudio.com/docs/terminal/shell-integration) to improve command detection';
+ 			}
+-			this._logService.debug(`RunInTerminalTool: Using \`${execution.strategy.type}\` execute strategy for command \`${command}\``);
++			this._logService.info(`RunInTerminalTool: Using \`${execution.strategy.type}\` execute strategy for command \`${command}\``);
+ 			store.add(execution);
+ 			RunInTerminalTool._activeExecutions.set(termId, execution);
+ 
+@@ -1150,7 +1150,7 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 							toolSpecificData.terminalCommandState = state;
+ 						}
+ 
+-						this._logService.debug(`RunInTerminalTool: Finished \`${execution.strategy.type}\` execute strategy with exitCode \`${executeResult.exitCode}\`, result.length \`${executeResult.output?.length}\`, error \`${executeResult.error}\``);
++						this._logService.info(`RunInTerminalTool: Finished \`${execution.strategy.type}\` execute strategy with exitCode \`${executeResult.exitCode}\`, result.length \`${executeResult.output?.length}\`, error \`${executeResult.error}\``);
+ 						outputLineCount = executeResult.output === undefined ? 0 : count(executeResult.output.trim(), '\n') + 1;
+ 						exitCode = executeResult.exitCode;
+ 						error = executeResult.error;
+
+From 186188e74346bae9951e2068241e67a0b441f45d Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Sun, 22 Mar 2026 15:55:55 +0100
+Subject: [PATCH 4/5] fix: include ignorespace in bash shell integration
+ history verification
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When VSCODE_PREVENT_SHELL_HISTORY=1 is set (which it is for all tool
+terminals created by the run_in_terminal tool), the bash shell
+integration script sets HISTCONTROL="ignorespace" (line 67). This
+causes bash to exclude space-prefixed commands from history.
+
+Later in the same script (line 200), a regex decides whether to use
+`history 1` or $BASH_COMMAND to capture the current command in
+__vsc_preexec. The regex checks for erasedups, ignoreboth, and
+ignoredups — but NOT ignorespace. This is a bug because:
+
+1. The same script sets HISTCONTROL=ignorespace 130 lines earlier
+2. ignoreboth (which IS in the regex) is defined by bash as
+   "ignorespace + ignoredups" — so the compound form was handled
+   but the simple form was not
+
+The consequence: with HISTCONTROL=ignorespace and __vsc_history_verify=1,
+__vsc_preexec calls `history 1` to get the current command. But the
+command has a leading space (added by PreventHistoryRewriter), so bash
+history never recorded it. `history 1` returns the PREVIOUS command
+or nothing. This causes __vsc_current_command to be wrong or empty.
+
+In __vsc_command_complete, when __vsc_current_command is empty, the
+script sends the OSC sequence 633;D WITHOUT an exit code (line 373).
+The VS Code side then receives onCommandFinished with exitCode=undefined,
+breaking exit code detection for ALL tool terminal commands on bash.
+
+The fix adds ignorespace to the existing regex, so bash falls back to
+$BASH_COMMAND (which always works regardless of history settings).
+This matches the behavior already provided when ignoreboth is set.
+---
+ .github/skills/fix-ci-failures/SKILL.md       | 199 ++++++++++++++++++
+ .../common/scripts/shellIntegration-bash.sh   |   2 +-
+ 2 files changed, 200 insertions(+), 1 deletion(-)
+ create mode 100644 .github/skills/fix-ci-failures/SKILL.md
+
+diff --git a/.github/skills/fix-ci-failures/SKILL.md b/.github/skills/fix-ci-failures/SKILL.md
+new file mode 100644
+index 0000000000000..e21aef484143b
+--- /dev/null
++++ b/.github/skills/fix-ci-failures/SKILL.md
+@@ -0,0 +1,199 @@
++---
++name: fix-ci-failures
++description: Investigate and fix CI failures on a pull request. Use when CI checks fail on a PR branch — covers finding the PR, identifying failed checks, downloading logs and artifacts, extracting the failure cause, and iterating on a fix. Requires the `gh` CLI.
++---
++
++# Investigating and Fixing CI Failures
++
++This skill guides you through diagnosing and fixing CI failures on a PR using the `gh` CLI. The user has the PR branch checked out locally.
++
++## Workflow Overview
++
++1. Identify the current branch and its PR
++2. Check CI status and find failed checks
++3. Download logs for failed jobs
++4. Extract and understand the failure
++5. Fix the issue and push
++
++---
++
++## Step 1: Identify the Branch and PR
++
++```bash
++# Get the current branch name
++git branch --show-current
++
++# Find the PR for this branch
++gh pr view --json number,title,url,statusCheckRollup
++```
++
++If no PR is found, the user may need to specify the PR number.
++
++---
++
++## Step 2: Check CI Status
++
++```bash
++# List all checks and their status (pass/fail/pending)
++gh pr checks --json name,state,link,bucket
++
++# Filter to only failed checks
++gh pr checks --json name,state,link,bucket --jq '.[] | select(.bucket == "fail")'
++```
++
++The `link` field contains the URL to the GitHub Actions job. Extract the **run ID** from the URL — it's the number after `/runs/`:
++```
++https://github.com/microsoft/vscode/actions/runs/<RUN_ID>/job/<JOB_ID>
++```
++
++If checks are still `IN_PROGRESS`, wait for them to complete before downloading logs:
++```bash
++gh pr checks --watch --fail-fast
++```
++
++---
++
++## Step 3: Get Failed Job Details
++
++```bash
++# List failed jobs in a run (use the run ID from the check link)
++gh run view <RUN_ID> --json jobs --jq '.jobs[] | select(.conclusion == "failure") | {name: .name, id: .databaseId}'
++```
++
++---
++
++## Step 4: Download Failure Logs
++
++There are two approaches depending on the type of failure.
++
++### Option A: View Failed Step Logs Directly
++
++Best for build/compile/lint failures where the error is in the step output:
++
++```bash
++# View only the failed step logs (most useful — shows just the errors)
++gh run view <RUN_ID> --job <JOB_ID> --log-failed
++```
++
++The output can be large. Pipe through `tail` or `grep` to focus:
++```bash
++# Last 100 lines of failed output
++gh run view <RUN_ID> --job <JOB_ID> --log-failed | tail -100
++
++# Search for common error patterns
++gh run view <RUN_ID> --job <JOB_ID> --log-failed | grep -E "Error|FAIL|error TS|AssertionError|failing"
++```
++
++### Option B: Download Artifacts
++
++Best for integration test failures where detailed logs (terminal logs, ext host logs, crash dumps) are uploaded as artifacts:
++
++```bash
++# List available artifacts for a run
++gh run download <RUN_ID> --pattern '*' --dir /dev/null 2>&1 || gh run view <RUN_ID> --json jobs --jq '.jobs[].name'
++
++# Download log artifacts for a specific failed job
++# Artifact naming convention: logs-<platform>-<arch>-<test-type>-<attempt>
++# Examples: logs-linux-x64-electron-1, logs-linux-x64-remote-1
++gh run download <RUN_ID> -n "logs-linux-x64-electron-1" -D /tmp/ci-logs
++
++# Download crash dumps if available
++gh run download <RUN_ID> -n "crash-dump-linux-x64-electron-1" -D /tmp/ci-crashes
++```
++
++> **Tip**: Use the test runner name from the failed check (e.g., "Linux / Electron" → `electron`, "Linux / Remote" → `remote`) to construct the artifact name.
++
++### VS Code Log Artifacts Structure
++
++Downloaded log artifacts typically contain:
++```
++logs-linux-x64-electron-1/
++  main.log              # Main process log
++  terminal.log          # Terminal/pty host log (key for run_in_terminal issues)
++  window1/
++    renderer.log        # Renderer process log
++    exthost/
++      exthost.log       # Extension host log (key for extension test failures)
++```
++
++Key files to examine first:
++- **Test assertion failures**: Check `exthost.log` for the extension host output and stack traces
++- **Terminal/sandbox issues**: Check `terminal.log` for rewriter pipeline, shell integration, and strategy logs
++- **Crash/hang**: Check `main.log` and look for crash dumps artifacts
++
++---
++
++## Step 5: Extract the Failure
++
++### For Test Failures
++
++Look for the test runner output in the failed step log:
++```bash
++# Find failing test names and assertion messages
++gh run view <RUN_ID> --job <JOB_ID> --log-failed | grep -A 5 "failing\|AssertionError\|Expected\|Unexpected"
++```
++
++Common patterns in VS Code CI:
++- **`AssertionError [ERR_ASSERTION]`**: Test assertion failed — check expected vs actual values
++- **`Extension host test runner exit code: 1`**: Integration test suite had failures
++- **`Command produced no output`**: Shell integration may not have captured command output (see terminal.log)
++- **`Error: Timeout`**: Test timed out — could be a hang or slow CI machine
++
++### For Build Failures
++
++```bash
++# Find TypeScript compilation errors
++gh run view <RUN_ID> --job <JOB_ID> --log-failed | grep "error TS"
++
++# Find hygiene/lint errors
++gh run view <RUN_ID> --job <JOB_ID> --log-failed | grep -E "eslint|stylelint|hygiene"
++```
++
++---
++
++## Step 6: Determine if Failures are Related to the PR
++
++Before fixing, determine if the failure is caused by the PR changes or is a pre-existing flake:
++
++1. **Check if the failing test is in code you changed** — if the test is in a completely unrelated area, it may be a flake
++2. **Check the test name** — does it relate to the feature area you modified?
++3. **Look at the failure output** — does it reference code paths your PR touches?
++4. **Check if the same tests fail on main** — if identical failures exist on recent main commits, it's a pre-existing issue
++
++```bash
++# Check recent runs on main for the same workflow
++gh run list --branch main --workflow pr-linux-test.yml --limit 5 --json databaseId,conclusion,displayTitle
++```
++
++---
++
++## Step 7: Fix and Iterate
++
++1. Make the fix locally
++2. Verify compilation: check the `VS Code - Build` task or run `npm run compile-check-ts-native`
++3. Run relevant unit tests locally: `./scripts/test.sh --grep "<pattern>"`
++4. Commit and push:
++   ```bash
++   git add -A
++   git commit -m "fix: <description>"
++   git push
++   ```
++5. Watch CI again:
++   ```bash
++   gh pr checks --watch --fail-fast
++   ```
++
++---
++
++## Quick Reference
++
++| Task | Command |
++|------|---------|
++| Find PR for branch | `gh pr view --json number,url` |
++| List all checks | `gh pr checks --json name,state,bucket` |
++| List failed checks only | `gh pr checks --json name,state,link,bucket --jq '.[] \| select(.bucket == "fail")'` |
++| Watch checks until done | `gh pr checks --watch --fail-fast` |
++| Failed jobs in a run | `gh run view <RUN_ID> --json jobs --jq '.jobs[] \| select(.conclusion == "failure") \| {name, id: .databaseId}'` |
++| View failed step logs | `gh run view <RUN_ID> --job <JOB_ID> --log-failed` |
++| Download log artifacts | `gh run download <RUN_ID> -n "<artifact-name>" -D /tmp/ci-logs` |
++| Recent main runs | `gh run list --branch main --workflow <workflow>.yml --limit 5` |
+diff --git a/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh b/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
+index ff974695f6949..c5729c399410f 100644
+--- a/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
++++ b/src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh
+@@ -197,7 +197,7 @@ fi
+ 
+ # Allow verifying $BASH_COMMAND doesn't have aliases resolved via history when the right HISTCONTROL
+ # configuration is used
+-__vsc_regex_histcontrol=".*(erasedups|ignoreboth|ignoredups).*"
++__vsc_regex_histcontrol=".*(erasedups|ignoreboth|ignoredups|ignorespace).*"
+ if [[ "${HISTCONTROL:-}" =~ $__vsc_regex_histcontrol ]]; then
+ 	__vsc_history_verify=0
+ else
+
+From 64b20969c77a9146587c2ce5f821cdc81e1ee2e1 Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Sun, 22 Mar 2026 16:19:41 +0100
+Subject: [PATCH 5/5] docs: improve fix-ci-failures skill with faster log
+ retrieval workflow
+
+---
+ .github/skills/fix-ci-failures/SKILL.md | 76 ++++++++++++++++++++++++-
+ 1 file changed, 73 insertions(+), 3 deletions(-)
+
+diff --git a/.github/skills/fix-ci-failures/SKILL.md b/.github/skills/fix-ci-failures/SKILL.md
+index e21aef484143b..4e05478ad78b5 100644
+--- a/.github/skills/fix-ci-failures/SKILL.md
++++ b/.github/skills/fix-ci-failures/SKILL.md
+@@ -75,6 +75,8 @@ Best for build/compile/lint failures where the error is in the step output:
+ gh run view <RUN_ID> --job <JOB_ID> --log-failed
+ ```
+ 
++> **Important**: `--log-failed` requires the **entire run** to complete, not just the failed job. If other jobs are still running, this command will block or error. Use **Option C** below to get logs for a completed job while the run is still in progress.
++
+ The output can be large. Pipe through `tail` or `grep` to focus:
+ ```bash
+ # Last 100 lines of failed output
+@@ -101,7 +103,36 @@ gh run download <RUN_ID> -n "logs-linux-x64-electron-1" -D /tmp/ci-logs
+ gh run download <RUN_ID> -n "crash-dump-linux-x64-electron-1" -D /tmp/ci-crashes
+ ```
+ 
+-> **Tip**: Use the test runner name from the failed check (e.g., "Linux / Electron" → `electron`, "Linux / Remote" → `remote`) to construct the artifact name.
++> **Tip**: Use the test runner name from the failed check (e.g., "Linux / Electron" → `electron`, "Linux / Remote" → `remote`) and platform map ("Windows" → `windows-x64`, "Linux" → `linux-x64`, "macOS" → `macos-arm64`) to construct the artifact name.
++
++> **Warning**: Log artifacts may be empty if the test runner crashed before producing output (e.g., Electron download failure). In that case, fall back to **Option C**.
++
++### Option C: Download Per-Job Logs via API (works while run is in progress)
++
++When the run is still in progress but the failed job has completed, use the GitHub API to download that job's step logs directly:
++
++```bash
++# Save the full job log to a temp file (can be very large — 30k+ lines)
++gh api repos/microsoft/vscode/actions/jobs/<JOB_ID>/logs > "$TMPDIR/ci-job-log.txt"
++```
++
++Then search the saved file. **Start with `##[error]`** — this is the GitHub Actions error annotation that marks the exact line where the step failed:
++
++```bash
++# Step 1: Find the error annotation (fastest path to the failure)
++grep -n '##\[error\]' "$TMPDIR/ci-job-log.txt"
++
++# Step 2: Read context around the error (e.g., if error is on line 34371, read 200 lines before it)
++sed -n '34171,34371p' "$TMPDIR/ci-job-log.txt"
++```
++
++If `##[error]` doesn't reveal enough, use broader patterns:
++```bash
++# Find test failures, exceptions, and crash indicators
++grep -n -E 'HTTPError|ECONNRESET|ETIMEDOUT|502|exit code|Process completed|node:internal|triggerUncaughtException' "$TMPDIR/ci-job-log.txt" | head -20
++```
++
++> **Why save to a file?** The API response for a full job log can be 30k+ lines. Tool output gets truncated, so always redirect to a file first, then search.
+ 
+ ### VS Code Log Artifacts Structure
+ 
+@@ -153,18 +184,54 @@ gh run view <RUN_ID> --job <JOB_ID> --log-failed | grep -E "eslint|stylelint|hyg
+ 
+ ## Step 6: Determine if Failures are Related to the PR
+ 
+-Before fixing, determine if the failure is caused by the PR changes or is a pre-existing flake:
++Before fixing, determine if the failure is caused by the PR changes or is a pre-existing/infrastructure issue:
+ 
+ 1. **Check if the failing test is in code you changed** — if the test is in a completely unrelated area, it may be a flake
+ 2. **Check the test name** — does it relate to the feature area you modified?
+ 3. **Look at the failure output** — does it reference code paths your PR touches?
+ 4. **Check if the same tests fail on main** — if identical failures exist on recent main commits, it's a pre-existing issue
++5. **Look for infrastructure failures** — network timeouts, npm registry errors, and machine-level issues are not caused by code changes
+ 
+ ```bash
+ # Check recent runs on main for the same workflow
+ gh run list --branch main --workflow pr-linux-test.yml --limit 5 --json databaseId,conclusion,displayTitle
+ ```
+ 
++### Recognizing Infrastructure / Flaky Failures
++
++Not all CI failures are caused by code changes. Common infrastructure failures:
++
++**Network / Registry issues**:
++- `npm ERR! network`, `ETIMEDOUT`, `ECONNRESET`, `EAI_AGAIN` — npm registry unreachable
++- `error: RPC failed; curl 56`, `fetch-pack: unexpected disconnect` — git network failure
++- `Error: unable to get local issuer certificate` — TLS/certificate issues
++- `rate limit exceeded` — GitHub API rate limiting
++- `HTTPError: Request failed with status code 502` on `electron/electron/releases` — Electron CDN download failure (common in the `node.js integration tests` step, which downloads Electron at runtime)
++
++**Machine / Environment issues**:
++- `No space left on device` — CI disk full
++- `ENOMEM`, `JavaScript heap out of memory` — CI machine ran out of memory
++- `The runner has received a shutdown signal` — CI preemption / timeout
++- `Error: The operation was canceled` — GitHub Actions cancelled the job
++- `Xvfb failed to start` — display server for headless Linux tests failed
++
++**Test flakes** (not infrastructure, but not your fault either):
++- Timeouts on tests that normally pass — slow CI machine
++- Race conditions in async tests
++- Shell integration not reporting exit codes (see terminal.log for `exitCode: undefined`)
++
++**What to do with infrastructure failures**:
++1. **Don't change code** — the failure isn't caused by your PR
++2. **Re-run the failed jobs** via the GitHub UI or:
++   ```bash
++   gh run rerun <RUN_ID> --failed
++   ```
++3. If failures persist across re-runs, check if main is also broken:
++   ```bash
++   gh run list --branch main --limit 10 --json databaseId,conclusion,displayTitle
++   ```
++4. If main is broken too, wait for it to be fixed — your PR is not the cause
++
+ ---
+ 
+ ## Step 7: Fix and Iterate
+@@ -194,6 +261,9 @@ gh run list --branch main --workflow pr-linux-test.yml --limit 5 --json database
+ | List failed checks only | `gh pr checks --json name,state,link,bucket --jq '.[] \| select(.bucket == "fail")'` |
+ | Watch checks until done | `gh pr checks --watch --fail-fast` |
+ | Failed jobs in a run | `gh run view <RUN_ID> --json jobs --jq '.jobs[] \| select(.conclusion == "failure") \| {name, id: .databaseId}'` |
+-| View failed step logs | `gh run view <RUN_ID> --job <JOB_ID> --log-failed` |
++| View failed step logs | `gh run view <RUN_ID> --job <JOB_ID> --log-failed` (requires full run to complete) |
++| Download job log via API | `gh api repos/microsoft/vscode/actions/jobs/<JOB_ID>/logs > "$TMPDIR/ci-job-log.txt"` (works while run is in progress) |
++| Find error line in log | `grep -n '##\[error\]' "$TMPDIR/ci-job-log.txt"` |
+ | Download log artifacts | `gh run download <RUN_ID> -n "<artifact-name>" -D /tmp/ci-logs` |
++| Re-run failed jobs | `gh run rerun <RUN_ID> --failed` |
+ | Recent main runs | `gh run list --branch main --workflow <workflow>.yml --limit 5` |

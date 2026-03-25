@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "instance_id": "microsoft__vscode-303859",
+  "repo": {
+    "full_name": "microsoft/vscode",
+    "url": "https://github.com/microsoft/vscode",
+    "base_commit": "ca117fbb4f0a60c2bcd03bdf5db2bf4e037a4e9e",
+    "primary_language": "TypeScript",
+    "languages": [
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "Normally, we prepend a space to terminal commands, which prevents them from being added to history. It looks like sandboxed commands don't get that, so my shell history is polluted with agent commands. \n\n<img width=\"1057\" height=\"150\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/cdd304fa-abcd-4568-a951-2d069a38cbc0\" />",
+    "source": "issue",
+    "source_url": "https://github.com/microsoft/vscode/issues/303769",
+    "source_id": 303769
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      ".github/skills/fix-ci-failures/SKILL.md",
+      "extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts",
+      "src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts"
+    ],
+    "affected_directories": [
+      ".github/skills/fix-ci-failures",
+      "extensions/vscode-api-tests/src/singlefolder-tests",
+      "src/vs/workbench/contrib/terminal/common/scripts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser"
+    ],
+    "files_changed": 8,
+    "directories_changed": 8,
+    "insertions": 299,
+    "deletions": 11,
+    "test_files_changed": [
+      "extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts"
+    ],
+    "source_files_changed": [
+      ".github/skills/fix-ci-failures/SKILL.md",
+      "src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 303859,
+    "pr_url": "https://github.com/microsoft/vscode/pull/303859",
+    "pr_title": "Fix command rewriting issues when terminal sandboxing is enabled",
+    "pr_merged_at": "2026-03-22T17:04:13Z",
+    "issue_number": 303769,
+    "issue_url": "https://github.com/microsoft/vscode/issues/303769",
+    "issue_created_at": "2026-03-21T19:15:13Z",
+    "issue_labels": [
+      "bug",
+      "verified",
+      "insiders-released",
+      "agent-sandbox"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 8,
+    "directories_changed": 8,
+    "cross_package": false,
+    "insertions": 299,
+    "deletions": 11,
+    "dependency_depth": 6,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 35.0
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-21T19:15:13Z",
+    "pr_merged_at": "2026-03-22T17:04:13Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      ".github/skills/fix-ci-failures/SKILL.md",
+      "extensions/vscode-api-tests/src/singlefolder-tests/chat.runInTerminal.test.ts",
+      "src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/sandboxedCommandLinePresenter.test.ts"
+    ],
+    "dependency_chain": [
+      ".github/skills/fix-ci-failures/SKILL.md",
+      "src/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/executeStrategy/richExecuteStrategy.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLinePresenter/sandboxedCommandLinePresenter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineRewriter/commandLineSandboxRewriter.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts"
+    ],
+    "min_context_tokens": 16000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

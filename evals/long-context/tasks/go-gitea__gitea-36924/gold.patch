@@ -1,0 +1,1111 @@
+From ac2ad557dd2e1d36b1c603fafffda999c4f04083 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Wed, 18 Mar 2026 21:28:57 +0100
+Subject: [PATCH 1/8] Feature: Add button to re-run failed jobs in Actions
+
+Adds a "Re-run failed jobs" button to the Actions run view that reruns
+only failed jobs and their downstream dependents, matching GitHub's
+behaviour described in issue #35997.
+
+- Add `RerunFailedWorkflowRunJobs` service function
+- Add `GetFailedRerunJobs` helper with full test coverage
+- Add web route `POST /{run}/rerun-failed` and handler `RerunFailed`
+- Add API route `POST /runs/{run}/rerun-failed-jobs`
+- Show button only when the run is done and has at least one failed job
+- Extract `checkRunRerunAllowed` guard shared by both web handlers
+- Merge `validateRunForRerun` into `prepareRunRerun` (one function)
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ options/locale/locale_en-US.json           |  1 +
+ routers/api/v1/api.go                      |  1 +
+ routers/api/v1/repo/action.go              | 53 ++++++++++++
+ routers/web/repo/actions/view.go           | 58 ++++++++++---
+ routers/web/web.go                         |  1 +
+ services/actions/rerun.go                  | 92 +++++++++++++++++----
+ services/actions/rerun_test.go             | 94 ++++++++++++++++++++++
+ templates/repo/actions/view_component.tmpl |  1 +
+ templates/swagger/v1_json.tmpl             | 52 ++++++++++++
+ web_src/js/components/RepoActionView.vue   | 12 ++-
+ web_src/js/features/repo-actions.ts        |  1 +
+ 11 files changed, 338 insertions(+), 28 deletions(-)
+
+diff --git a/options/locale/locale_en-US.json b/options/locale/locale_en-US.json
+index 5a5148a146ebe..1eafb3c9d178a 100644
+--- a/options/locale/locale_en-US.json
++++ b/options/locale/locale_en-US.json
+@@ -81,6 +81,7 @@
+   "retry": "Retry",
+   "rerun": "Re-run",
+   "rerun_all": "Re-run all jobs",
++  "rerun_failed": "Re-run failed jobs",
+   "save": "Save",
+   "add": "Add",
+   "add_all": "Add All",
+diff --git a/routers/api/v1/api.go b/routers/api/v1/api.go
+index 560894b798e56..454bae73db896 100644
+--- a/routers/api/v1/api.go
++++ b/routers/api/v1/api.go
+@@ -1259,6 +1259,7 @@ func Routes() *web.Router {
+ 							m.Get("", repo.GetWorkflowRun)
+ 							m.Delete("", reqToken(), reqRepoWriter(unit.TypeActions), repo.DeleteActionRun)
+ 							m.Post("/rerun", reqToken(), reqRepoWriter(unit.TypeActions), repo.RerunWorkflowRun)
++							m.Post("/rerun-failed-jobs", reqToken(), reqRepoWriter(unit.TypeActions), repo.RerunFailedWorkflowRun)
+ 							m.Get("/jobs", repo.ListWorkflowRunJobs)
+ 							m.Post("/jobs/{job_id}/rerun", reqToken(), reqRepoWriter(unit.TypeActions), repo.RerunWorkflowJob)
+ 							m.Get("/artifacts", repo.GetArtifactsOfRun)
+diff --git a/routers/api/v1/repo/action.go b/routers/api/v1/repo/action.go
+index d7e51b80469bd..d674ef2147ce2 100644
+--- a/routers/api/v1/repo/action.go
++++ b/routers/api/v1/repo/action.go
+@@ -1268,6 +1268,59 @@ func RerunWorkflowRun(ctx *context.APIContext) {
+ 	ctx.JSON(http.StatusCreated, convertedRun)
+ }
+ 
++// RerunFailedWorkflowRun Reruns all failed jobs in a workflow run.
++func RerunFailedWorkflowRun(ctx *context.APIContext) {
++	// swagger:operation POST /repos/{owner}/{repo}/actions/runs/{run}/rerun-failed-jobs repository rerunFailedWorkflowRun
++	// ---
++	// summary: Reruns all failed jobs in a workflow run
++	// produces:
++	// - application/json
++	// parameters:
++	// - name: owner
++	//   in: path
++	//   description: owner of the repo
++	//   type: string
++	//   required: true
++	// - name: repo
++	//   in: path
++	//   description: name of the repository
++	//   type: string
++	//   required: true
++	// - name: run
++	//   in: path
++	//   description: id of the run
++	//   type: integer
++	//   required: true
++	// responses:
++	//   "201":
++	//     "$ref": "#/responses/WorkflowRun"
++	//   "400":
++	//     "$ref": "#/responses/error"
++	//   "403":
++	//     "$ref": "#/responses/forbidden"
++	//   "404":
++	//     "$ref": "#/responses/notFound"
++	//   "422":
++	//     "$ref": "#/responses/validationError"
++
++	run, jobs := getCurrentRepoActionRunJobsByID(ctx)
++	if ctx.Written() {
++		return
++	}
++
++	if err := actions_service.RerunFailedWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
++		handleWorkflowRerunError(ctx, err)
++		return
++	}
++
++	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
++	if err != nil {
++		ctx.APIErrorInternal(err)
++		return
++	}
++	ctx.JSON(http.StatusCreated, convertedRun)
++}
++
+ // RerunWorkflowJob Reruns a specific workflow job in a run.
+ func RerunWorkflowJob(ctx *context.APIContext) {
+ 	// swagger:operation POST /repos/{owner}/{repo}/actions/runs/{run}/jobs/{job_id}/rerun repository rerunWorkflowJob
+diff --git a/routers/web/repo/actions/view.go b/routers/web/repo/actions/view.go
+index 2685dd8857b14..d3f201cdef094 100644
+--- a/routers/web/repo/actions/view.go
++++ b/routers/web/repo/actions/view.go
+@@ -122,6 +122,7 @@ type ViewResponse struct {
+ 			CanCancel         bool          `json:"canCancel"`
+ 			CanApprove        bool          `json:"canApprove"` // the run needs an approval and the doer has permission to approve
+ 			CanRerun          bool          `json:"canRerun"`
++			CanRerunFailed    bool          `json:"canRerunFailed"`
+ 			CanDeleteArtifact bool          `json:"canDeleteArtifact"`
+ 			Done              bool          `json:"done"`
+ 			WorkflowID        string        `json:"workflowID"`
+@@ -238,6 +239,14 @@ func ViewPost(ctx *context_module.Context) {
+ 	resp.State.Run.CanApprove = run.NeedApproval && ctx.Repo.CanWrite(unit.TypeActions)
+ 	resp.State.Run.CanRerun = run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
+ 	resp.State.Run.CanDeleteArtifact = run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
++	if resp.State.Run.CanRerun {
++		for _, job := range jobs {
++			if job.Status == actions_model.StatusFailure {
++				resp.State.Run.CanRerunFailed = true
++				break
++			}
++		}
++	}
+ 	resp.State.Run.Done = run.Status.IsDone()
+ 	resp.State.Run.WorkflowID = run.WorkflowID
+ 	resp.State.Run.WorkflowLink = run.WorkflowLink()
+@@ -398,6 +407,22 @@ func convertToViewModel(ctx context.Context, locale translation.Locale, cursors
+ 	return viewJobs, logs, nil
+ }
+ 
++// checkRunRerunAllowed checks whether a rerun is permitted for the given run,
++// writing the appropriate JSON error to ctx and returning false when it is not.
++func checkRunRerunAllowed(ctx *context_module.Context, run *actions_model.ActionRun) bool {
++	if !run.Status.IsDone() {
++		ctx.JSONError(ctx.Locale.Tr("actions.runs.not_done"))
++		return false
++	}
++	cfgUnit := ctx.Repo.Repository.MustGetUnit(ctx, unit.TypeActions)
++	cfg := cfgUnit.ActionsConfig()
++	if cfg.IsWorkflowDisabled(run.WorkflowID) {
++		ctx.JSONError(ctx.Locale.Tr("actions.workflow.disabled"))
++		return false
++	}
++	return true
++}
++
+ // Rerun will rerun jobs in the given run
+ // If jobIDStr is a blank string, it means rerun all jobs
+ func Rerun(ctx *context_module.Context) {
+@@ -408,17 +433,7 @@ func Rerun(ctx *context_module.Context) {
+ 		return
+ 	}
+ 
+-	// rerun is not allowed if the run is not done
+-	if !run.Status.IsDone() {
+-		ctx.JSONError(ctx.Locale.Tr("actions.runs.not_done"))
+-		return
+-	}
+-
+-	// can not rerun job when workflow is disabled
+-	cfgUnit := ctx.Repo.Repository.MustGetUnit(ctx, unit.TypeActions)
+-	cfg := cfgUnit.ActionsConfig()
+-	if cfg.IsWorkflowDisabled(run.WorkflowID) {
+-		ctx.JSONError(ctx.Locale.Tr("actions.workflow.disabled"))
++	if !checkRunRerunAllowed(ctx, run) {
+ 		return
+ 	}
+ 
+@@ -435,6 +450,27 @@ func Rerun(ctx *context_module.Context) {
+ 	ctx.JSONOK()
+ }
+ 
++// RerunFailed reruns all failed jobs in the given run
++func RerunFailed(ctx *context_module.Context) {
++	runID := getRunID(ctx)
++
++	run, jobs, _ := getRunJobsAndCurrentJob(ctx, runID)
++	if ctx.Written() {
++		return
++	}
++
++	if !checkRunRerunAllowed(ctx, run) {
++		return
++	}
++
++	if err := actions_service.RerunFailedWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
++		ctx.ServerError("RerunFailedWorkflowRunJobs", err)
++		return
++	}
++
++	ctx.JSONOK()
++}
++
+ func Logs(ctx *context_module.Context) {
+ 	runID := getRunID(ctx)
+ 	jobID := ctx.PathParamInt64("job")
+diff --git a/routers/web/web.go b/routers/web/web.go
+index 8da7609994a2a..fd5276e4e08b4 100644
+--- a/routers/web/web.go
++++ b/routers/web/web.go
+@@ -1529,6 +1529,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
+ 			m.Get("/artifacts/{artifact_name}", actions.ArtifactsDownloadView)
+ 			m.Delete("/artifacts/{artifact_name}", reqRepoActionsWriter, actions.ArtifactsDeleteView)
+ 			m.Post("/rerun", reqRepoActionsWriter, actions.Rerun)
++			m.Post("/rerun-failed", reqRepoActionsWriter, actions.RerunFailed)
+ 		})
+ 		m.Group("/workflows/{workflow_name}", func() {
+ 			m.Get("/badge.svg", webAuth.AllowBasic, webAuth.AllowOAuth2, actions.GetWorkflowBadge)
+diff --git a/services/actions/rerun.go b/services/actions/rerun.go
+index 5177b90d61f17..7e31a430283b5 100644
+--- a/services/actions/rerun.go
++++ b/services/actions/rerun.go
+@@ -20,7 +20,27 @@ import (
+ 	"xorm.io/builder"
+ )
+ 
+-// GetAllRerunJobs get all jobs that need to be rerun when job should be rerun
++// GetFailedRerunJobs returns all failed jobs and their downstream dependent jobs that need to be rerun
++func GetFailedRerunJobs(allJobs []*actions_model.ActionRunJob) []*actions_model.ActionRunJob {
++	rerunJobIDSet := make(container.Set[int64])
++	var jobsToRerun []*actions_model.ActionRunJob
++
++	for _, job := range allJobs {
++		if job.Status == actions_model.StatusFailure {
++			for _, j := range GetAllRerunJobs(job, allJobs) {
++				if !rerunJobIDSet.Contains(j.ID) {
++					rerunJobIDSet.Add(j.ID)
++					jobsToRerun = append(jobsToRerun, j)
++				}
++			}
++		}
++	}
++
++	return jobsToRerun
++}
++
++// GetAllRerunJobs returns the target job and all jobs that transitively depend on it.
++// Downstream jobs are included regardless of their current status.
+ func GetAllRerunJobs(job *actions_model.ActionRunJob, allJobs []*actions_model.ActionRunJob) []*actions_model.ActionRunJob {
+ 	rerunJobs := []*actions_model.ActionRunJob{job}
+ 	rerunJobsIDSet := make(container.Set[string])
+@@ -49,12 +69,12 @@ func GetAllRerunJobs(job *actions_model.ActionRunJob, allJobs []*actions_model.A
+ 	return rerunJobs
+ }
+ 
+-// RerunWorkflowRunJobs reruns all done jobs of a workflow run,
+-// or reruns a selected job and all of its downstream jobs when targetJob is specified.
+-func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob, targetJob *actions_model.ActionRunJob) error {
+-	// Rerun is not allowed if the run is not done.
++// prepareRunRerun validates the run, resets its state, handles concurrency, persists the
++// updated run, and fires a status-update notification.
++// It returns isRunBlocked (true when the run itself is held by a concurrency group).
++func prepareRunRerun(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) (isRunBlocked bool, err error) {
+ 	if !run.Status.IsDone() {
+-		return util.NewInvalidArgumentErrorf("this workflow run is not done")
++		return false, util.NewInvalidArgumentErrorf("this workflow run is not done")
+ 	}
+ 
+ 	cfgUnit := repo.MustGetUnit(ctx, unit.TypeActions)
+@@ -62,7 +82,7 @@ func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run
+ 	// Rerun is not allowed when workflow is disabled.
+ 	cfg := cfgUnit.ActionsConfig()
+ 	if cfg.IsWorkflowDisabled(run.WorkflowID) {
+-		return util.NewInvalidArgumentErrorf("workflow %s is disabled", run.WorkflowID)
++		return false, util.NewInvalidArgumentErrorf("workflow %s is disabled", run.WorkflowID)
+ 	}
+ 
+ 	// Reset run's timestamps and status.
+@@ -73,31 +93,31 @@ func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run
+ 
+ 	vars, err := actions_model.GetVariablesOfRun(ctx, run)
+ 	if err != nil {
+-		return fmt.Errorf("get run %d variables: %w", run.ID, err)
++		return false, fmt.Errorf("get run %d variables: %w", run.ID, err)
+ 	}
+ 
+ 	if run.RawConcurrency != "" {
+ 		var rawConcurrency model.RawConcurrency
+ 		if err := yaml.Unmarshal([]byte(run.RawConcurrency), &rawConcurrency); err != nil {
+-			return fmt.Errorf("unmarshal raw concurrency: %w", err)
++			return false, fmt.Errorf("unmarshal raw concurrency: %w", err)
+ 		}
+ 
+ 		if err := EvaluateRunConcurrencyFillModel(ctx, run, &rawConcurrency, vars, nil); err != nil {
+-			return err
++			return false, err
+ 		}
+ 
+ 		run.Status, err = PrepareToStartRunWithConcurrency(ctx, run)
+ 		if err != nil {
+-			return err
++			return false, err
+ 		}
+ 	}
+ 
+ 	if err := actions_model.UpdateRun(ctx, run, "started", "stopped", "previous_duration", "status", "concurrency_group", "concurrency_cancel"); err != nil {
+-		return err
++		return false, err
+ 	}
+ 
+ 	if err := run.LoadAttributes(ctx); err != nil {
+-		return err
++		return false, err
+ 	}
+ 
+ 	for _, job := range jobs {
+@@ -106,7 +126,16 @@ func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run
+ 
+ 	notify_service.WorkflowRunStatusUpdate(ctx, run.Repo, run.TriggerUser, run)
+ 
+-	isRunBlocked := run.Status == actions_model.StatusBlocked
++	return run.Status == actions_model.StatusBlocked, nil
++}
++
++// RerunWorkflowRunJobs reruns all done jobs of a workflow run,
++// or reruns a selected job and all of its downstream jobs when targetJob is specified.
++func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob, targetJob *actions_model.ActionRunJob) error {
++	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
++	if err != nil {
++		return err
++	}
+ 
+ 	if targetJob == nil {
+ 		for _, job := range jobs {
+@@ -131,6 +160,41 @@ func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run
+ 	return nil
+ }
+ 
++// RerunFailedWorkflowRunJobs reruns all failed jobs of a workflow run and their downstream dependencies.
++func RerunFailedWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) error {
++	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
++	if err != nil {
++		return err
++	}
++
++	jobsToRerun := GetFailedRerunJobs(jobs)
++	if len(jobsToRerun) == 0 {
++		return nil
++	}
++
++	rerunJobByJobID := make(container.Set[string])
++	for _, j := range jobsToRerun {
++		rerunJobByJobID.Add(j.JobID)
++	}
++
++	for _, job := range jobsToRerun {
++		shouldBlockJob := isRunBlocked
++		if !shouldBlockJob {
++			for _, need := range job.Needs {
++				if rerunJobByJobID.Contains(need) {
++					shouldBlockJob = true
++					break
++				}
++			}
++		}
++		if err := rerunWorkflowJob(ctx, job, shouldBlockJob); err != nil {
++			return err
++		}
++	}
++
++	return nil
++}
++
+ func rerunWorkflowJob(ctx context.Context, job *actions_model.ActionRunJob, shouldBlock bool) error {
+ 	status := job.Status
+ 	if !status.IsDone() {
+diff --git a/services/actions/rerun_test.go b/services/actions/rerun_test.go
+index a98de7b78826c..d1606f5602f87 100644
+--- a/services/actions/rerun_test.go
++++ b/services/actions/rerun_test.go
+@@ -4,11 +4,14 @@
+ package actions
+ 
+ import (
++	"context"
+ 	"testing"
+ 
+ 	actions_model "code.gitea.io/gitea/models/actions"
++	"code.gitea.io/gitea/modules/util"
+ 
+ 	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
+ )
+ 
+ func TestGetAllRerunJobs(t *testing.T) {
+@@ -46,3 +49,94 @@ func TestGetAllRerunJobs(t *testing.T) {
+ 		assert.ElementsMatch(t, tc.rerunJobs, rerunJobs)
+ 	}
+ }
++
++func TestGetFailedRerunJobs(t *testing.T) {
++	// IDs must be non-zero to distinguish jobs in the dedup set.
++	makeJob := func(id int64, jobID string, status actions_model.Status, needs ...string) *actions_model.ActionRunJob {
++		return &actions_model.ActionRunJob{ID: id, JobID: jobID, Status: status, Needs: needs}
++	}
++
++	t.Run("no failed jobs returns empty", func(t *testing.T) {
++		jobs := []*actions_model.ActionRunJob{
++			makeJob(1, "job1", actions_model.StatusSuccess),
++			makeJob(2, "job2", actions_model.StatusSkipped, "job1"),
++		}
++		assert.Empty(t, GetFailedRerunJobs(jobs))
++	})
++
++	t.Run("single failed job with no dependents", func(t *testing.T) {
++		job1 := makeJob(1, "job1", actions_model.StatusFailure)
++		job2 := makeJob(2, "job2", actions_model.StatusSuccess)
++		jobs := []*actions_model.ActionRunJob{job1, job2}
++
++		result := GetFailedRerunJobs(jobs)
++		assert.ElementsMatch(t, []*actions_model.ActionRunJob{job1}, result)
++	})
++
++	t.Run("failed job pulls in downstream dependents", func(t *testing.T) {
++		// job1 failed; job2 depends on job1 (skipped); job3 depends on job2 (skipped)
++		job1 := makeJob(1, "job1", actions_model.StatusFailure)
++		job2 := makeJob(2, "job2", actions_model.StatusSkipped, "job1")
++		job3 := makeJob(3, "job3", actions_model.StatusSkipped, "job2")
++		job4 := makeJob(4, "job4", actions_model.StatusSuccess) // unrelated, must not appear
++		jobs := []*actions_model.ActionRunJob{job1, job2, job3, job4}
++
++		result := GetFailedRerunJobs(jobs)
++		assert.ElementsMatch(t, []*actions_model.ActionRunJob{job1, job2, job3}, result)
++	})
++
++	t.Run("multiple independent failed jobs each pull in their own dependents", func(t *testing.T) {
++		// job1 failed -> job3 depends on job1
++		// job2 failed -> job4 depends on job2
++		job1 := makeJob(1, "job1", actions_model.StatusFailure)
++		job2 := makeJob(2, "job2", actions_model.StatusFailure)
++		job3 := makeJob(3, "job3", actions_model.StatusSkipped, "job1")
++		job4 := makeJob(4, "job4", actions_model.StatusSkipped, "job2")
++		jobs := []*actions_model.ActionRunJob{job1, job2, job3, job4}
++
++		result := GetFailedRerunJobs(jobs)
++		assert.ElementsMatch(t, []*actions_model.ActionRunJob{job1, job2, job3, job4}, result)
++	})
++
++	t.Run("shared downstream dependent is not duplicated", func(t *testing.T) {
++		// job1 and job2 both failed; job3 depends on both
++		job1 := makeJob(1, "job1", actions_model.StatusFailure)
++		job2 := makeJob(2, "job2", actions_model.StatusFailure)
++		job3 := makeJob(3, "job3", actions_model.StatusSkipped, "job1", "job2")
++		jobs := []*actions_model.ActionRunJob{job1, job2, job3}
++
++		result := GetFailedRerunJobs(jobs)
++		assert.ElementsMatch(t, []*actions_model.ActionRunJob{job1, job2, job3}, result)
++		assert.Len(t, result, 3) // job3 must appear exactly once
++	})
++
++	t.Run("successful downstream job of a failed job is still included", func(t *testing.T) {
++		// job1 failed; job2 succeeded but depends on job1 — downstream is always rerun
++		// regardless of its own status (GetAllRerunJobs includes all transitive dependents)
++		job1 := makeJob(1, "job1", actions_model.StatusFailure)
++		job2 := makeJob(2, "job2", actions_model.StatusSuccess, "job1")
++		jobs := []*actions_model.ActionRunJob{job1, job2}
++
++		result := GetFailedRerunJobs(jobs)
++		assert.ElementsMatch(t, []*actions_model.ActionRunJob{job1, job2}, result)
++	})
++}
++
++func TestRerunValidation(t *testing.T) {
++	runningRun := &actions_model.ActionRun{Status: actions_model.StatusRunning}
++
++	t.Run("RerunWorkflowRunJobs rejects a non-done run", func(t *testing.T) {
++		err := RerunWorkflowRunJobs(context.Background(), nil, runningRun, nil, nil)
++		require.Error(t, err)
++		assert.ErrorIs(t, err, util.ErrInvalidArgument)
++	})
++
++	t.Run("RerunFailedWorkflowRunJobs rejects a non-done run when failed jobs exist", func(t *testing.T) {
++		jobs := []*actions_model.ActionRunJob{
++			{ID: 1, JobID: "job1", Status: actions_model.StatusFailure},
++		}
++		err := RerunFailedWorkflowRunJobs(context.Background(), nil, runningRun, jobs)
++		require.Error(t, err)
++		assert.ErrorIs(t, err, util.ErrInvalidArgument)
++	})
++}
+diff --git a/templates/repo/actions/view_component.tmpl b/templates/repo/actions/view_component.tmpl
+index 457159ef54fc6..9fa77d8a3fed9 100644
+--- a/templates/repo/actions/view_component.tmpl
++++ b/templates/repo/actions/view_component.tmpl
+@@ -7,6 +7,7 @@
+ 		data-locale-cancel="{{ctx.Locale.Tr "actions.runs.cancel"}}"
+ 		data-locale-rerun="{{ctx.Locale.Tr "rerun"}}"
+ 		data-locale-rerun-all="{{ctx.Locale.Tr "rerun_all"}}"
++		data-locale-rerun-failed="{{ctx.Locale.Tr "rerun_failed"}}"
+ 		data-locale-runs-scheduled="{{ctx.Locale.Tr "actions.runs.scheduled"}}"
+ 		data-locale-runs-commit="{{ctx.Locale.Tr "actions.runs.commit"}}"
+ 		data-locale-runs-pushed-by="{{ctx.Locale.Tr "actions.runs.pushed_by"}}"
+diff --git a/templates/swagger/v1_json.tmpl b/templates/swagger/v1_json.tmpl
+index fab51203d1c4c..6d28854564072 100644
+--- a/templates/swagger/v1_json.tmpl
++++ b/templates/swagger/v1_json.tmpl
+@@ -5578,6 +5578,58 @@
+         }
+       }
+     },
++    "/repos/{owner}/{repo}/actions/runs/{run}/rerun-failed-jobs": {
++      "post": {
++        "produces": [
++          "application/json"
++        ],
++        "tags": [
++          "repository"
++        ],
++        "summary": "Reruns all failed jobs in a workflow run",
++        "operationId": "rerunFailedWorkflowRun",
++        "parameters": [
++          {
++            "type": "string",
++            "description": "owner of the repo",
++            "name": "owner",
++            "in": "path",
++            "required": true
++          },
++          {
++            "type": "string",
++            "description": "name of the repository",
++            "name": "repo",
++            "in": "path",
++            "required": true
++          },
++          {
++            "type": "integer",
++            "description": "id of the run",
++            "name": "run",
++            "in": "path",
++            "required": true
++          }
++        ],
++        "responses": {
++          "201": {
++            "$ref": "#/responses/WorkflowRun"
++          },
++          "400": {
++            "$ref": "#/responses/error"
++          },
++          "403": {
++            "$ref": "#/responses/forbidden"
++          },
++          "404": {
++            "$ref": "#/responses/notFound"
++          },
++          "422": {
++            "$ref": "#/responses/validationError"
++          }
++        }
++      }
++    },
+     "/repos/{owner}/{repo}/actions/secrets": {
+       "get": {
+         "produces": [
+diff --git a/web_src/js/components/RepoActionView.vue b/web_src/js/components/RepoActionView.vue
+index 8f3fd097b3d8d..386dc7034c71d 100644
+--- a/web_src/js/components/RepoActionView.vue
++++ b/web_src/js/components/RepoActionView.vue
+@@ -147,6 +147,7 @@ export default defineComponent({
+         canCancel: false,
+         canApprove: false,
+         canRerun: false,
++        canRerunFailed: false,
+         canDeleteArtifact: false,
+         done: false,
+         workflowID: '',
+@@ -512,9 +513,14 @@ export default defineComponent({
+           <button class="ui basic small compact button red" @click="cancelRun()" v-else-if="run.canCancel">
+             {{ locale.cancel }}
+           </button>
+-          <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun`" v-else-if="run.canRerun">
+-            {{ locale.rerun_all }}
+-          </button>
++          <template v-else-if="run.canRerun">
++            <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun-failed`" v-if="run.canRerunFailed">
++              {{ locale.rerun_failed }}
++            </button>
++            <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun`">
++              {{ locale.rerun_all }}
++            </button>
++          </template>
+         </div>
+       </div>
+       <div class="action-commit-summary">
+diff --git a/web_src/js/features/repo-actions.ts b/web_src/js/features/repo-actions.ts
+index fca41c0c66a8d..7fa0461786953 100644
+--- a/web_src/js/features/repo-actions.ts
++++ b/web_src/js/features/repo-actions.ts
+@@ -19,6 +19,7 @@ export function initRepositoryActionView() {
+       cancel: el.getAttribute('data-locale-cancel'),
+       rerun: el.getAttribute('data-locale-rerun'),
+       rerun_all: el.getAttribute('data-locale-rerun-all'),
++      rerun_failed: el.getAttribute('data-locale-rerun-failed'),
+       scheduled: el.getAttribute('data-locale-runs-scheduled'),
+       commit: el.getAttribute('data-locale-runs-commit'),
+       pushedBy: el.getAttribute('data-locale-runs-pushed-by'),
+
+From a2b0510bd9d521dcced5adad6a884eed1ba811f2 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Wed, 18 Mar 2026 22:57:59 +0100
+Subject: [PATCH 2/8] UI: combine re-run buttons into split dropdown
+
+---
+ web_src/js/components/RepoActionView.vue | 26 ++++++++++++++++++++----
+ 1 file changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/web_src/js/components/RepoActionView.vue b/web_src/js/components/RepoActionView.vue
+index 386dc7034c71d..0fd77105ea815 100644
+--- a/web_src/js/components/RepoActionView.vue
++++ b/web_src/js/components/RepoActionView.vue
+@@ -129,6 +129,7 @@ export default defineComponent({
+       currentJobStepsStates: [] as Array<JobStepState>,
+       artifacts: [] as Array<Record<string, any>>,
+       menuVisible: false,
++      showRerunMenu: false,
+       isFullScreen: false,
+       showWorkflowGraph: showWorkflowGraph,
+       timeVisible: {
+@@ -455,6 +456,7 @@ export default defineComponent({
+ 
+     closeDropdown() {
+       if (this.menuVisible) this.menuVisible = false;
++      if (this.showRerunMenu) this.showRerunMenu = false;
+     },
+ 
+     elStepsContainer(): HTMLElement {
+@@ -514,10 +516,20 @@ export default defineComponent({
+             {{ locale.cancel }}
+           </button>
+           <template v-else-if="run.canRerun">
+-            <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun-failed`" v-if="run.canRerunFailed">
+-              {{ locale.rerun_failed }}
+-            </button>
+-            <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun`">
++            <div v-if="run.canRerunFailed" class="ui small compact buttons">
++              <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun-failed`">
++                {{ locale.rerun_failed }}
++              </button>
++              <div class="ui basic small compact dropdown icon button rerun-dropdown" @click.stop="showRerunMenu = !showRerunMenu">
++                <SvgIcon name="octicon-triangle-down" :size="14"/>
++                <div class="menu" v-show="showRerunMenu">
++                  <div class="item link-action" :data-url="`${run.link}/rerun`">
++                    {{ locale.rerun_all }}
++                  </div>
++                </div>
++              </div>
++            </div>
++            <button v-else class="ui basic small compact button link-action" :data-url="`${run.link}/rerun`">
+               {{ locale.rerun_all }}
+             </button>
+           </template>
+@@ -665,6 +677,12 @@ export default defineComponent({
+   </div>
+ </template>
+ <style scoped>
++.rerun-dropdown > .menu {
++  min-width: 100%;
++  left: 0;
++  right: auto;
++}
++
+ .action-view-body {
+   padding-top: 12px;
+   padding-bottom: 12px;
+
+From 8c20ff61571c74308a9978ffb75d9ecac0350fc1 Mon Sep 17 00:00:00 2001
+From: wxiaoguang <wxiaoguang@gmail.com>
+Date: Sat, 21 Mar 2026 03:22:55 +0800
+Subject: [PATCH 3/8] fix dropdown
+
+---
+ routers/web/devtest/mock_actions.go      |  1 +
+ web_src/js/components/RepoActionView.vue | 12 ++----------
+ 2 files changed, 3 insertions(+), 10 deletions(-)
+
+diff --git a/routers/web/devtest/mock_actions.go b/routers/web/devtest/mock_actions.go
+index 0dd33425dc267..ac3483239a5fd 100644
+--- a/routers/web/devtest/mock_actions.go
++++ b/routers/web/devtest/mock_actions.go
+@@ -75,6 +75,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
+ 	resp.State.Run.CanCancel = runID == 10
+ 	resp.State.Run.CanApprove = runID == 20
+ 	resp.State.Run.CanRerun = runID == 30
++	resp.State.Run.CanRerunFailed = runID == 30
+ 	resp.State.Run.CanDeleteArtifact = true
+ 	resp.State.Run.WorkflowID = "workflow-id"
+ 	resp.State.Run.WorkflowLink = "./workflow-link"
+diff --git a/web_src/js/components/RepoActionView.vue b/web_src/js/components/RepoActionView.vue
+index 0fd77105ea815..3c4f6d527398e 100644
+--- a/web_src/js/components/RepoActionView.vue
++++ b/web_src/js/components/RepoActionView.vue
+@@ -129,7 +129,6 @@ export default defineComponent({
+       currentJobStepsStates: [] as Array<JobStepState>,
+       artifacts: [] as Array<Record<string, any>>,
+       menuVisible: false,
+-      showRerunMenu: false,
+       isFullScreen: false,
+       showWorkflowGraph: showWorkflowGraph,
+       timeVisible: {
+@@ -456,7 +455,6 @@ export default defineComponent({
+ 
+     closeDropdown() {
+       if (this.menuVisible) this.menuVisible = false;
+-      if (this.showRerunMenu) this.showRerunMenu = false;
+     },
+ 
+     elStepsContainer(): HTMLElement {
+@@ -520,9 +518,9 @@ export default defineComponent({
+               <button class="ui basic small compact button link-action" :data-url="`${run.link}/rerun-failed`">
+                 {{ locale.rerun_failed }}
+               </button>
+-              <div class="ui basic small compact dropdown icon button rerun-dropdown" @click.stop="showRerunMenu = !showRerunMenu">
++              <div class="ui basic small compact dropdown icon button">
+                 <SvgIcon name="octicon-triangle-down" :size="14"/>
+-                <div class="menu" v-show="showRerunMenu">
++                <div class="menu">
+                   <div class="item link-action" :data-url="`${run.link}/rerun`">
+                     {{ locale.rerun_all }}
+                   </div>
+@@ -677,12 +675,6 @@ export default defineComponent({
+   </div>
+ </template>
+ <style scoped>
+-.rerun-dropdown > .menu {
+-  min-width: 100%;
+-  left: 0;
+-  right: auto;
+-}
+-
+ .action-view-body {
+   padding-top: 12px;
+   padding-bottom: 12px;
+
+From 7cd8e79373fecc6befd046de51c1aef81ff981b0 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Sat, 21 Mar 2026 00:53:44 +0100
+Subject: [PATCH 4/8] fix review comments part 1
+
+---
+ routers/api/v1/repo/action.go    | 9 ++-------
+ routers/web/repo/actions/view.go | 2 +-
+ services/actions/rerun.go        | 2 +-
+ 3 files changed, 4 insertions(+), 9 deletions(-)
+
+diff --git a/routers/api/v1/repo/action.go b/routers/api/v1/repo/action.go
+index d674ef2147ce2..0fe94bb2dea73 100644
+--- a/routers/api/v1/repo/action.go
++++ b/routers/api/v1/repo/action.go
+@@ -1293,7 +1293,7 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
+ 	//   required: true
+ 	// responses:
+ 	//   "201":
+-	//     "$ref": "#/responses/WorkflowRun"
++	//     description: Created
+ 	//   "400":
+ 	//     "$ref": "#/responses/error"
+ 	//   "403":
+@@ -1313,12 +1313,7 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
+ 		return
+ 	}
+ 
+-	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
+-	if err != nil {
+-		ctx.APIErrorInternal(err)
+-		return
+-	}
+-	ctx.JSON(http.StatusCreated, convertedRun)
++	ctx.Status(http.StatusCreated)
+ }
+ 
+ // RerunWorkflowJob Reruns a specific workflow job in a run.
+diff --git a/routers/web/repo/actions/view.go b/routers/web/repo/actions/view.go
+index d3f201cdef094..1ff0325374301 100644
+--- a/routers/web/repo/actions/view.go
++++ b/routers/web/repo/actions/view.go
+@@ -241,7 +241,7 @@ func ViewPost(ctx *context_module.Context) {
+ 	resp.State.Run.CanDeleteArtifact = run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
+ 	if resp.State.Run.CanRerun {
+ 		for _, job := range jobs {
+-			if job.Status == actions_model.StatusFailure {
++			if job.Status == actions_model.StatusFailure || job.Status == actions_model.StatusCancelled {
+ 				resp.State.Run.CanRerunFailed = true
+ 				break
+ 			}
+diff --git a/services/actions/rerun.go b/services/actions/rerun.go
+index 7e31a430283b5..6e50be454acda 100644
+--- a/services/actions/rerun.go
++++ b/services/actions/rerun.go
+@@ -26,7 +26,7 @@ func GetFailedRerunJobs(allJobs []*actions_model.ActionRunJob) []*actions_model.
+ 	var jobsToRerun []*actions_model.ActionRunJob
+ 
+ 	for _, job := range allJobs {
+-		if job.Status == actions_model.StatusFailure {
++		if job.Status == actions_model.StatusFailure || job.Status == actions_model.StatusCancelled {
+ 			for _, j := range GetAllRerunJobs(job, allJobs) {
+ 				if !rerunJobIDSet.Contains(j.ID) {
+ 					rerunJobIDSet.Add(j.ID)
+
+From 8a310520fd0e41060cd72823559bf55ab0f3c556 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Sat, 21 Mar 2026 00:58:24 +0100
+Subject: [PATCH 5/8] move isRunBlocked check after jobsToRerun retrieval
+
+---
+ services/actions/rerun.go | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/services/actions/rerun.go b/services/actions/rerun.go
+index 6e50be454acda..b7768dd42dacd 100644
+--- a/services/actions/rerun.go
++++ b/services/actions/rerun.go
+@@ -162,16 +162,16 @@ func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run
+ 
+ // RerunFailedWorkflowRunJobs reruns all failed jobs of a workflow run and their downstream dependencies.
+ func RerunFailedWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) error {
+-	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
+-	if err != nil {
+-		return err
+-	}
+-
+ 	jobsToRerun := GetFailedRerunJobs(jobs)
+ 	if len(jobsToRerun) == 0 {
+ 		return nil
+ 	}
+ 
++	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
++	if err != nil {
++		return err
++	}
++
+ 	rerunJobByJobID := make(container.Set[string])
+ 	for _, j := range jobsToRerun {
+ 		rerunJobByJobID.Add(j.JobID)
+
+From 590b5c4ff7ec7ddd97f036879125cbcf9146eb86 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Sat, 21 Mar 2026 01:04:46 +0100
+Subject: [PATCH 6/8] fix swagger
+
+---
+ templates/swagger/v1_json.tmpl | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/templates/swagger/v1_json.tmpl b/templates/swagger/v1_json.tmpl
+index 6d28854564072..a96e805a8432f 100644
+--- a/templates/swagger/v1_json.tmpl
++++ b/templates/swagger/v1_json.tmpl
+@@ -5613,7 +5613,7 @@
+         ],
+         "responses": {
+           "201": {
+-            "$ref": "#/responses/WorkflowRun"
++            "description": "Created"
+           },
+           "400": {
+             "$ref": "#/responses/error"
+
+From 2f407cec52aafb2a39d80635de0ef393553a0058 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Sat, 21 Mar 2026 11:18:43 +0100
+Subject: [PATCH 7/8] merge functions into 1
+
+---
+ routers/api/v1/repo/action.go    |  6 ++--
+ routers/web/repo/actions/view.go | 12 ++++----
+ services/actions/rerun.go        | 47 ++++++--------------------------
+ services/actions/rerun_test.go   |  9 ++++--
+ 4 files changed, 25 insertions(+), 49 deletions(-)
+
+diff --git a/routers/api/v1/repo/action.go b/routers/api/v1/repo/action.go
+index 0fe94bb2dea73..ff6916d97f111 100644
+--- a/routers/api/v1/repo/action.go
++++ b/routers/api/v1/repo/action.go
+@@ -1255,7 +1255,7 @@ func RerunWorkflowRun(ctx *context.APIContext) {
+ 		return
+ 	}
+ 
+-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs, nil); err != nil {
++	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
+ 		handleWorkflowRerunError(ctx, err)
+ 		return
+ 	}
+@@ -1308,7 +1308,7 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
+ 		return
+ 	}
+ 
+-	if err := actions_service.RerunFailedWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
++	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetFailedRerunJobs(jobs)); err != nil {
+ 		handleWorkflowRerunError(ctx, err)
+ 		return
+ 	}
+@@ -1369,7 +1369,7 @@ func RerunWorkflowJob(ctx *context.APIContext) {
+ 	}
+ 
+ 	targetJob := jobs[jobIdx]
+-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs, targetJob); err != nil {
++	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetAllRerunJobs(targetJob, jobs)); err != nil {
+ 		handleWorkflowRerunError(ctx, err)
+ 		return
+ 	}
+diff --git a/routers/web/repo/actions/view.go b/routers/web/repo/actions/view.go
+index 1ff0325374301..6a48a2daa383b 100644
+--- a/routers/web/repo/actions/view.go
++++ b/routers/web/repo/actions/view.go
+@@ -437,12 +437,14 @@ func Rerun(ctx *context_module.Context) {
+ 		return
+ 	}
+ 
+-	var targetJob *actions_model.ActionRunJob // nil means rerun all jobs
++	var jobsToRerun []*actions_model.ActionRunJob
+ 	if ctx.PathParam("job") != "" {
+-		targetJob = currentJob
++		jobsToRerun = actions_service.GetAllRerunJobs(currentJob, jobs)
++	} else {
++		jobsToRerun = jobs
+ 	}
+ 
+-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs, targetJob); err != nil {
++	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobsToRerun); err != nil {
+ 		ctx.ServerError("RerunWorkflowRunJobs", err)
+ 		return
+ 	}
+@@ -463,8 +465,8 @@ func RerunFailed(ctx *context_module.Context) {
+ 		return
+ 	}
+ 
+-	if err := actions_service.RerunFailedWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
+-		ctx.ServerError("RerunFailedWorkflowRunJobs", err)
++	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetFailedRerunJobs(jobs)); err != nil {
++		ctx.ServerError("RerunWorkflowRunJobs", err)
+ 		return
+ 	}
+ 
+diff --git a/services/actions/rerun.go b/services/actions/rerun.go
+index b7768dd42dacd..1596d9bfc5a7f 100644
+--- a/services/actions/rerun.go
++++ b/services/actions/rerun.go
+@@ -129,59 +129,30 @@ func prepareRunRerun(ctx context.Context, repo *repo_model.Repository, run *acti
+ 	return run.Status == actions_model.StatusBlocked, nil
+ }
+ 
+-// RerunWorkflowRunJobs reruns all done jobs of a workflow run,
+-// or reruns a selected job and all of its downstream jobs when targetJob is specified.
+-func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob, targetJob *actions_model.ActionRunJob) error {
+-	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
+-	if err != nil {
+-		return err
+-	}
+-
+-	if targetJob == nil {
+-		for _, job := range jobs {
+-			// If the job has needs, it should be blocked to wait for its dependencies.
+-			shouldBlockJob := len(job.Needs) > 0 || isRunBlocked
+-			if err := rerunWorkflowJob(ctx, job, shouldBlockJob); err != nil {
+-				return err
+-			}
+-		}
+-		return nil
+-	}
+-
+-	rerunJobs := GetAllRerunJobs(targetJob, jobs)
+-	for _, job := range rerunJobs {
+-		// Jobs other than the selected one should wait for dependencies.
+-		shouldBlockJob := job.JobID != targetJob.JobID || isRunBlocked
+-		if err := rerunWorkflowJob(ctx, job, shouldBlockJob); err != nil {
+-			return err
+-		}
+-	}
+-
+-	return nil
+-}
+-
+-// RerunFailedWorkflowRunJobs reruns all failed jobs of a workflow run and their downstream dependencies.
+-func RerunFailedWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) error {
+-	jobsToRerun := GetFailedRerunJobs(jobs)
++// RerunWorkflowRunJobs reruns the given jobs of a workflow run.
++// jobsToRerun must include all jobs to be rerun (the target job and its transitively dependent jobs).
++// A job is blocked (waiting for dependencies) if the run itself is blocked or if any of its
++// needs are also being rerun.
++func RerunWorkflowRunJobs(ctx context.Context, repo *repo_model.Repository, run *actions_model.ActionRun, jobsToRerun []*actions_model.ActionRunJob) error {
+ 	if len(jobsToRerun) == 0 {
+ 		return nil
+ 	}
+ 
+-	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobs)
++	isRunBlocked, err := prepareRunRerun(ctx, repo, run, jobsToRerun)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	rerunJobByJobID := make(container.Set[string])
++	rerunJobIDs := make(container.Set[string])
+ 	for _, j := range jobsToRerun {
+-		rerunJobByJobID.Add(j.JobID)
++		rerunJobIDs.Add(j.JobID)
+ 	}
+ 
+ 	for _, job := range jobsToRerun {
+ 		shouldBlockJob := isRunBlocked
+ 		if !shouldBlockJob {
+ 			for _, need := range job.Needs {
+-				if rerunJobByJobID.Contains(need) {
++				if rerunJobIDs.Contains(need) {
+ 					shouldBlockJob = true
+ 					break
+ 				}
+diff --git a/services/actions/rerun_test.go b/services/actions/rerun_test.go
+index d1606f5602f87..3b4dc5483f424 100644
+--- a/services/actions/rerun_test.go
++++ b/services/actions/rerun_test.go
+@@ -126,16 +126,19 @@ func TestRerunValidation(t *testing.T) {
+ 	runningRun := &actions_model.ActionRun{Status: actions_model.StatusRunning}
+ 
+ 	t.Run("RerunWorkflowRunJobs rejects a non-done run", func(t *testing.T) {
+-		err := RerunWorkflowRunJobs(context.Background(), nil, runningRun, nil, nil)
++		jobs := []*actions_model.ActionRunJob{
++			{ID: 1, JobID: "job1"},
++		}
++		err := RerunWorkflowRunJobs(context.Background(), nil, runningRun, jobs)
+ 		require.Error(t, err)
+ 		assert.ErrorIs(t, err, util.ErrInvalidArgument)
+ 	})
+ 
+-	t.Run("RerunFailedWorkflowRunJobs rejects a non-done run when failed jobs exist", func(t *testing.T) {
++	t.Run("RerunWorkflowRunJobs rejects a non-done run when failed jobs exist", func(t *testing.T) {
+ 		jobs := []*actions_model.ActionRunJob{
+ 			{ID: 1, JobID: "job1", Status: actions_model.StatusFailure},
+ 		}
+-		err := RerunFailedWorkflowRunJobs(context.Background(), nil, runningRun, jobs)
++		err := RerunWorkflowRunJobs(context.Background(), nil, runningRun, GetFailedRerunJobs(jobs))
+ 		require.Error(t, err)
+ 		assert.ErrorIs(t, err, util.ErrInvalidArgument)
+ 	})
+
+From 608dfa2d46e2c4e8aa593551ac37c15a8bcb3d97 Mon Sep 17 00:00:00 2001
+From: Nicolas <bircni@icloud.com>
+Date: Sat, 21 Mar 2026 21:35:15 +0100
+Subject: [PATCH 8/8] fix api swagger
+
+---
+ routers/api/v1/repo/action.go  | 4 +---
+ templates/swagger/v1_json.tmpl | 5 +----
+ 2 files changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/routers/api/v1/repo/action.go b/routers/api/v1/repo/action.go
+index ff6916d97f111..d704092051b34 100644
+--- a/routers/api/v1/repo/action.go
++++ b/routers/api/v1/repo/action.go
+@@ -1273,8 +1273,6 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
+ 	// swagger:operation POST /repos/{owner}/{repo}/actions/runs/{run}/rerun-failed-jobs repository rerunFailedWorkflowRun
+ 	// ---
+ 	// summary: Reruns all failed jobs in a workflow run
+-	// produces:
+-	// - application/json
+ 	// parameters:
+ 	// - name: owner
+ 	//   in: path
+@@ -1293,7 +1291,7 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
+ 	//   required: true
+ 	// responses:
+ 	//   "201":
+-	//     description: Created
++	//     "$ref": "#/responses/empty"
+ 	//   "400":
+ 	//     "$ref": "#/responses/error"
+ 	//   "403":
+diff --git a/templates/swagger/v1_json.tmpl b/templates/swagger/v1_json.tmpl
+index a96e805a8432f..20db48b91a05b 100644
+--- a/templates/swagger/v1_json.tmpl
++++ b/templates/swagger/v1_json.tmpl
+@@ -5580,9 +5580,6 @@
+     },
+     "/repos/{owner}/{repo}/actions/runs/{run}/rerun-failed-jobs": {
+       "post": {
+-        "produces": [
+-          "application/json"
+-        ],
+         "tags": [
+           "repository"
+         ],
+@@ -5613,7 +5610,7 @@
+         ],
+         "responses": {
+           "201": {
+-            "description": "Created"
++            "$ref": "#/responses/empty"
+           },
+           "400": {
+             "$ref": "#/responses/error"

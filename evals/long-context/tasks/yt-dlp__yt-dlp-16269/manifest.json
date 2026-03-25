@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "instance_id": "yt-dlp__yt-dlp-16269",
+  "repo": {
+    "full_name": "yt-dlp/yt-dlp",
+    "url": "https://github.com/yt-dlp/yt-dlp",
+    "base_commit": "18656b2f2af41a138793c7012a88f467c0d90274",
+    "primary_language": "JavaScript",
+    "languages": [
+      "JavaScript",
+      "Python"
+    ]
+  },
+  "problem": {
+    "statement": "### Checklist\n\n- [x] I'm reporting that yt-dlp is broken on a **supported** site\n- [x] I've verified that I have **updated yt-dlp to nightly or master** ([update instructions](https://github.com/yt-dlp/yt-dlp#update-channels))\n- [x] I've checked that all provided URLs are playable in a browser with the same IP and same login details\n- [x] I've checked that all URLs and arguments with special characters are [properly quoted or escaped](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#video-url-contains-an-ampersand--and-im-getting-some-strange-output-1-2839-or-v-is-not-recognized-as-an-internal-or-external-command)\n- [x] I've searched [known issues](https://github.com/yt-dlp/yt-dlp/issues/3766), [the FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ), and the [bugtracker](https://github.com/yt-dlp/yt-dlp/issues?q=is%3Aissue%20-label%3Aspam%20%20) for similar issues **including closed ones**. DO NOT post duplicates\n- [x] I've read the [policy against AI/LLM contributions](https://github.com/yt-dlp/yt-dlp/blob/master/CONTRIBUTING.md#automated-contributions-ai--llm-policy) and understand I may be blocked from the repository if it is violated\n- [ ] I've read about [sharing account credentials](https://github.com/yt-dlp/yt-dlp/blob/master/CONTRIBUTING.md#are-you-willing-to-share-account-details-if-needed) and I'm willing to share it if required\n\n### Region\n\nFrench\n\n### Provide a description that is worded well enough to be understood\n\nyt-dlp no work anymore here since today for youtube \nanyone know how to solve please ? \n\n### Provide verbose output that clearly demonstrates the problem\n\n- [x] Run **your** yt-dlp command with **-vU** flag added (`yt-dlp -vU <your command line>`)\n- [ ] If using API, add `'verbose': True` to `YoutubeDL` params instead\n- [x] Copy the WHOLE output (starting with `[debug] Command-line config`) and insert it below\n\n### Complete Verbose Output\n\n```shell\n[debug] Command-line config: ['-vU', '--js-runtimes', 'deno', '--force-ipv4', '--cookies', '/cookies.txt', '-j', '--', 'https://www.youtube.com/watch?v=Itdv5IKN2P4']\n[debug] Encodings: locale utf-8, fs utf-8, pref utf-8, out utf-8, error utf-8, screen utf-8\n[debug] yt-dlp version stable@2026.03.13 from yt-dlp/yt-dlp (linux_exe)\n[debug] Python 3.13.12 (CPython x86_64 64bit) - Linux-5.15.158-2-pve-x86_64-with-glibc2.31 (OpenSSL 3.5.5 27 Jan 2026, glibc 2.31)\n[debug] exe versions: ffmpeg 7.0.2-static (setts), ffprobe 7.0.2-static, phantomjs broken\n[debug] Optional libraries: Cryptodome-3.23.0, brotli-1.2.0, certifi-2026.02.25, curl_cffi-0.13.0, mutagen-1.47.0, requests-2.32.5, secretstorage-3.5.0, sqlite3-3.51.2, urllib3-2.6.3, websockets-16.0, yt_dlp_ejs-0.7.0\n[debug] JS runtimes: deno-2.6.7\n[debug] Proxy map: {}\n[debug] Request Handlers: urllib, requests, websockets, curl_cffi\n[debug] Plugin directories: none\n[debug] Loaded 1864 extractors\n[debug] Fetching release info: https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest\nLatest version: stable@2026.03.13 from yt-dlp/yt-dlp\nyt-dlp is up to date (stable@2026.03.13 from yt-dlp/yt-dlp)\n[debug] [youtube] Found YouTube account cookies\n[debug] [youtube] [pot] PO Token Providers: none\n[debug] [youtube] [pot] PO Token Cache Providers: memory\n[debug] [youtube] [pot] PO Token Cache Spec Providers: webpo\n[debug] [youtube] [jsc] JS Challenge Providers: bun (unavailable), deno, node (unavailable), quickjs (unavailable)\n[youtube] Extracting URL: https://www.youtube.com/watch?v=Itdv5IKN2P4\n[youtube] Itdv5IKN2P4: Downloading webpage\n[debug] [youtube] Forcing \"tv\" player JS variant for player 76ad2fe8\n        original url = /s/player/76ad2fe8/player_es6.vflset/en_US/base.js\n[youtube] Itdv5IKN2P4: Downloading tv downgraded player API JSON\n[debug] [youtube] Itdv5IKN2P4: Detected a 355s ad skippable after 5s for web_safari\n[debug] [youtube] Itdv5IKN2P4: Detected a 154s ad skippable after 5s for web_safari\n[youtube] Itdv5IKN2P4: Downloading player 76ad2fe8-tv\n[youtube] [jsc:deno] Solving JS challenges using deno\n[debug] [youtube] [jsc:deno] Using challenge solver lib script v0.7.0 (source: python package, variant: minified)\n[debug] [youtube] [jsc:deno] Using challenge solver core script v0.7.0 (source: python package, variant: minified)\n[debug] [youtube] [jsc:deno] Running deno: deno run --ext=js --no-code-cache --no-prompt --no-remote --no-lock --node-modules-dir=none --no-config --no-npm --cached-only -\nWARNING: [youtube] [jsc] Error solving n challenge request using \"deno\" provider: Error running deno process (returncode: 1): error: Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'origin')\n    at eval (eval at <anonymous> (file:///root/$deno$stdin.js:58:6208), <anonymous>:22912:27)\n    at eval (eval at <anonymous> (file:///root/$deno$stdin.js:58:6208), <anonymous>:89552:4)\n    at file:///root/$deno$stdin.js:58:6229\n    at file:///root/$deno$stdin.js:58:6235\n    at file:///root/$deno$stdin.js:59:36.\n         input = NChallengeInput(player_url='https://www.youtube.com/s/player/76ad2fe8/tv-player-ias.vflset/tv-player-ias.js', challenges=['hmngRotZKhbOddG1', 'E0Gm7akG3cvQtc8y', 'kYKUvdDwX3HwqJpj', 'EjJoWs0PgJGx-wLh'])\n         Please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\nWARNING: [youtube] Itdv5IKN2P4: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS\n[debug] [youtube] Itdv5IKN2P4: Detected experiment to bind GVS PO Token to video ID for web_safari client\n[debug] [youtube] Itdv5IKN2P4: Some web_safari client https formats have been skipped as they are missing a URL. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details\nWARNING: Only images are available for download. use --list-formats to see them\n[debug] Sort order given by extractor: quality, res, fps, hdr:12, source, vcodec, channels, acodec, lang, proto\n[debug] Formats sorted by: hasvid, ie_pref, quality, res, fps, hdr:12(7), source, vcodec, channels, acodec, lang, proto, size, br, asr, vext, aext, hasaud, id\n[debug] Default format spec: bestvideo*+bestaudio/best\nERROR: [youtube] Itdv5IKN2P4: Requested format is not available. Use --list-formats for a list of available formats\nTraceback (most recent call last):\n  File \"yt_dlp/YoutubeDL.py\", line 1698, in wrapper\n  File \"yt_dlp/YoutubeDL.py\", line 1854, in __extract_info\n  File \"yt_dlp/YoutubeDL.py\", line 1913, in process_ie_result\n  File \"yt_dlp/YoutubeDL.py\", line 3058, in process_video_result\nyt_dlp.utils.ExtractorError: [youtube] Itdv5IKN2P4: Requested format is not available. Use --list-formats for a list of available formats\n```",
+    "source": "issue",
+    "source_url": "https://github.com/yt-dlp/yt-dlp/issues/16256",
+    "source_id": 16256
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "Makefile",
+      "README.md",
+      "pyproject.toml",
+      "test/test_jsc/test_ejs_integration.py",
+      "yt_dlp/extractor/youtube/_video.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/_info.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/yt.solver.core.js"
+    ],
+    "affected_directories": [
+      "test/test_jsc",
+      "yt_dlp/extractor/youtube",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor"
+    ],
+    "files_changed": 7,
+    "directories_changed": 3,
+    "insertions": 48,
+    "deletions": 32,
+    "test_files_changed": [
+      "test/test_jsc/test_ejs_integration.py"
+    ],
+    "source_files_changed": [
+      "Makefile",
+      "README.md",
+      "pyproject.toml",
+      "yt_dlp/extractor/youtube/_video.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/_info.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/yt.solver.core.js"
+    ]
+  },
+  "provenance": {
+    "pr_number": 16269,
+    "pr_url": "https://github.com/yt-dlp/yt-dlp/pull/16269",
+    "pr_title": "[ie/youtube] Update ejs to 0.8.0",
+    "pr_merged_at": "2026-03-17T23:17:34Z",
+    "issue_number": 16256,
+    "issue_url": "https://github.com/yt-dlp/yt-dlp/issues/16256",
+    "issue_created_at": "2026-03-17T00:58:03Z",
+    "issue_labels": [
+      "high-priority",
+      "site-bug",
+      "site:youtube"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 7,
+    "directories_changed": 3,
+    "cross_package": false,
+    "insertions": 48,
+    "deletions": 32,
+    "dependency_depth": 6,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 11.5
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-17T00:58:03Z",
+    "pr_merged_at": "2026-03-17T23:17:34Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "test/test_jsc/test_ejs_integration.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "Makefile",
+      "README.md",
+      "pyproject.toml",
+      "test/test_jsc/test_ejs_integration.py",
+      "yt_dlp/extractor/youtube/_video.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/_info.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/yt.solver.core.js"
+    ],
+    "dependency_chain": [
+      "Makefile",
+      "README.md",
+      "pyproject.toml",
+      "yt_dlp/extractor/youtube/_video.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/_info.py",
+      "yt_dlp/extractor/youtube/jsc/_builtin/vendor/yt.solver.core.js"
+    ],
+    "min_context_tokens": 14000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

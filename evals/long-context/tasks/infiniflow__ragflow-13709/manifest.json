@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "instance_id": "infiniflow__ragflow-13709",
+  "repo": {
+    "full_name": "infiniflow/ragflow",
+    "url": "https://github.com/infiniflow/ragflow",
+    "base_commit": "456b1bbf6666ab2424a644b383ffb1f4cbf1fdf4",
+    "primary_language": "Python",
+    "languages": [
+      "Python",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "### Self Checks\n\n- [x] I have searched for existing issues [search for existing issues](https://github.com/infiniflow/ragflow/issues), including closed ones.\n- [x] I confirm that I am using English to submit this report ([Language Policy](https://github.com/infiniflow/ragflow/issues/5910)).\n- [x] Non-english title submitions will be closed directly ( \u975e\u82f1\u6587\u6807\u9898\u7684\u63d0\u4ea4\u5c06\u4f1a\u88ab\u76f4\u63a5\u5173\u95ed ) ([Language Policy](https://github.com/infiniflow/ragflow/issues/5910)).\n- [x] Please do not modify this template :) and fill in all the required fields.\n\n### Is your feature request related to a problem?\n\n```Markdown\nCan you add perplexity contextualized embeddings api?\n```\n\n### Describe the feature you'd like\n\nAdd support \n\n### Describe implementation you've considered\n\n_No response_\n\n### Documentation, adoption, use case\n\n```Markdown\n\n```\n\n### Additional information\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/infiniflow/ragflow/issues/13610",
+    "source_id": 13610
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "conf/llm_factories.json",
+      "docs/guides/models/supported_models.mdx",
+      "rag/llm/embedding_model.py",
+      "test/unit_test/rag/llm/__init__.py",
+      "test/unit_test/rag/llm/conftest.py",
+      "test/unit_test/rag/llm/test_perplexity_embed.py",
+      "web/src/constants/llm.ts"
+    ],
+    "affected_directories": [
+      "conf",
+      "docs/guides/models",
+      "rag/llm",
+      "test/unit_test/rag/llm",
+      "web/src/constants"
+    ],
+    "files_changed": 7,
+    "directories_changed": 5,
+    "insertions": 441,
+    "deletions": 16,
+    "test_files_changed": [
+      "test/unit_test/rag/llm/__init__.py",
+      "test/unit_test/rag/llm/conftest.py",
+      "test/unit_test/rag/llm/test_perplexity_embed.py"
+    ],
+    "source_files_changed": [
+      "conf/llm_factories.json",
+      "docs/guides/models/supported_models.mdx",
+      "rag/llm/embedding_model.py",
+      "web/src/constants/llm.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 13709,
+    "pr_url": "https://github.com/infiniflow/ragflow/pull/13709",
+    "pr_title": "feat: add Perplexity contextualized embeddings API as a new model provider",
+    "pr_merged_at": "2026-03-20T02:47:48Z",
+    "issue_number": 13610,
+    "issue_url": "https://github.com/infiniflow/ragflow/issues/13610",
+    "issue_created_at": "2026-03-15T08:13:15Z",
+    "issue_labels": [
+      "\ud83d\udc9e feature"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation",
+      "type-system"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 7,
+    "directories_changed": 5,
+    "cross_package": false,
+    "insertions": 441,
+    "deletions": 16,
+    "dependency_depth": 4,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 49.2
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-15T08:13:15Z",
+    "pr_merged_at": "2026-03-20T02:47:48Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "test/unit_test/rag/llm/__init__.py",
+      "test/unit_test/rag/llm/conftest.py",
+      "test/unit_test/rag/llm/test_perplexity_embed.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "conf/llm_factories.json",
+      "docs/guides/models/supported_models.mdx",
+      "rag/llm/embedding_model.py",
+      "test/unit_test/rag/llm/__init__.py",
+      "test/unit_test/rag/llm/conftest.py",
+      "test/unit_test/rag/llm/test_perplexity_embed.py",
+      "web/src/constants/llm.ts"
+    ],
+    "dependency_chain": [
+      "conf/llm_factories.json",
+      "docs/guides/models/supported_models.mdx",
+      "rag/llm/embedding_model.py",
+      "web/src/constants/llm.ts"
+    ],
+    "min_context_tokens": 14000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

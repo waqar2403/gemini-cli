@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "instance_id": "pingcap__tidb-66617",
+  "repo": {
+    "full_name": "pingcap/tidb",
+    "url": "https://github.com/pingcap/tidb",
+    "base_commit": "27f439fdf0a32094383b218cddcd6afac8ec1f9a",
+    "primary_language": "Go",
+    "languages": [
+      "Go"
+    ]
+  },
+  "problem": {
+    "statement": "## Enhancement\nIn containerized deployment environments such as Kubernetes (K8s), container IP addresses change frequently. The current Slow Query Log only records IP information, which is no longer sufficient to track the actual source servers of SQL statements.\n\nTo resolve this issue, we need to record the SESSION_CONNECT_ATTRS information\u2014passed by the client during the handshake phase\u2014into the Slow Query Log. This will allow us to accurately pinpoint the business origin using app_name or other custom tags.",
+    "source": "issue",
+    "source_url": "https://github.com/pingcap/tidb/issues/66616",
+    "source_id": 66616
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "pkg/executor/BUILD.bazel",
+      "pkg/executor/adapter_slow_log.go",
+      "pkg/executor/cluster_table_test.go",
+      "pkg/executor/slow_query.go",
+      "pkg/executor/slow_query_sql_test.go",
+      "pkg/executor/slow_query_test.go",
+      "pkg/infoschema/tables.go",
+      "pkg/infoschema/test/clustertablestest/BUILD.bazel",
+      "pkg/infoschema/test/clustertablestest/cluster_tables_test.go",
+      "pkg/infoschema/test/clustertablestest/tables_test.go",
+      "pkg/server/conn_test.go",
+      "pkg/server/internal/parse/BUILD.bazel",
+      "pkg/server/internal/parse/parse.go",
+      "pkg/server/internal/parse/parse_test.go",
+      "pkg/sessionctx/vardef/sysvar.go",
+      "pkg/sessionctx/vardef/tidb_vars.go",
+      "pkg/sessionctx/variable/noop.go",
+      "pkg/sessionctx/variable/slow_log.go",
+      "pkg/sessionctx/variable/statusvar.go",
+      "pkg/sessionctx/variable/sysvar.go",
+      "pkg/sessionctx/variable/tests/BUILD.bazel",
+      "pkg/sessionctx/variable/tests/session_test.go",
+      "pkg/sessionctx/variable/tests/variable_test.go",
+      "pkg/testkit/testutil/require.go"
+    ],
+    "affected_directories": [
+      "pkg/executor",
+      "pkg/infoschema",
+      "pkg/infoschema/test/clustertablestest",
+      "pkg/server",
+      "pkg/server/internal/parse",
+      "pkg/sessionctx/vardef",
+      "pkg/sessionctx/variable",
+      "pkg/sessionctx/variable/tests",
+      "pkg/testkit/testutil"
+    ],
+    "files_changed": 24,
+    "directories_changed": 9,
+    "insertions": 1088,
+    "deletions": 17,
+    "test_files_changed": [
+      "pkg/executor/cluster_table_test.go",
+      "pkg/executor/slow_query_sql_test.go",
+      "pkg/executor/slow_query_test.go",
+      "pkg/infoschema/test/clustertablestest/BUILD.bazel",
+      "pkg/infoschema/test/clustertablestest/cluster_tables_test.go",
+      "pkg/infoschema/test/clustertablestest/tables_test.go",
+      "pkg/server/conn_test.go",
+      "pkg/server/internal/parse/parse_test.go",
+      "pkg/sessionctx/variable/tests/BUILD.bazel",
+      "pkg/sessionctx/variable/tests/session_test.go",
+      "pkg/sessionctx/variable/tests/variable_test.go"
+    ],
+    "source_files_changed": [
+      "pkg/executor/BUILD.bazel",
+      "pkg/executor/adapter_slow_log.go",
+      "pkg/executor/slow_query.go",
+      "pkg/infoschema/tables.go",
+      "pkg/server/internal/parse/BUILD.bazel",
+      "pkg/server/internal/parse/parse.go",
+      "pkg/sessionctx/vardef/sysvar.go",
+      "pkg/sessionctx/vardef/tidb_vars.go",
+      "pkg/sessionctx/variable/noop.go",
+      "pkg/sessionctx/variable/slow_log.go",
+      "pkg/sessionctx/variable/statusvar.go",
+      "pkg/sessionctx/variable/sysvar.go",
+      "pkg/testkit/testutil/require.go"
+    ]
+  },
+  "provenance": {
+    "pr_number": 66617,
+    "pr_url": "https://github.com/pingcap/tidb/pull/66617",
+    "pr_title": "*: support logging session connect attrs to slow query log",
+    "pr_merged_at": "2026-03-23T19:28:10Z",
+    "issue_number": 66616,
+    "issue_url": "https://github.com/pingcap/tidb/issues/66616",
+    "issue_created_at": "2026-03-02T02:35:19Z",
+    "issue_labels": [
+      "type/enhancement"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "expert",
+    "reasoning_types": [
+      "api-boundary",
+      "type-system"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 24,
+    "directories_changed": 9,
+    "cross_package": false,
+    "insertions": 1088,
+    "deletions": 17,
+    "dependency_depth": 13,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 122.5
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-02T02:35:19Z",
+    "pr_merged_at": "2026-03-23T19:28:10Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "go",
+    "runtime_version": "1.22",
+    "package_manager": "go",
+    "install_command": "go mod download",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "go test ./...",
+    "fail_to_pass": [
+      "pkg/executor/cluster_table_test.go",
+      "pkg/executor/slow_query_sql_test.go",
+      "pkg/executor/slow_query_test.go",
+      "pkg/infoschema/test/clustertablestest/BUILD.bazel",
+      "pkg/infoschema/test/clustertablestest/cluster_tables_test.go",
+      "pkg/infoschema/test/clustertablestest/tables_test.go",
+      "pkg/server/conn_test.go",
+      "pkg/server/internal/parse/parse_test.go",
+      "pkg/sessionctx/variable/tests/BUILD.bazel",
+      "pkg/sessionctx/variable/tests/session_test.go",
+      "pkg/sessionctx/variable/tests/variable_test.go"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "pkg/executor/BUILD.bazel",
+      "pkg/executor/adapter_slow_log.go",
+      "pkg/executor/cluster_table_test.go",
+      "pkg/executor/slow_query.go",
+      "pkg/executor/slow_query_sql_test.go",
+      "pkg/executor/slow_query_test.go",
+      "pkg/infoschema/tables.go",
+      "pkg/infoschema/test/clustertablestest/BUILD.bazel",
+      "pkg/infoschema/test/clustertablestest/cluster_tables_test.go",
+      "pkg/infoschema/test/clustertablestest/tables_test.go",
+      "pkg/server/conn_test.go",
+      "pkg/server/internal/parse/BUILD.bazel",
+      "pkg/server/internal/parse/parse.go",
+      "pkg/server/internal/parse/parse_test.go",
+      "pkg/sessionctx/vardef/sysvar.go",
+      "pkg/sessionctx/vardef/tidb_vars.go",
+      "pkg/sessionctx/variable/noop.go",
+      "pkg/sessionctx/variable/slow_log.go",
+      "pkg/sessionctx/variable/statusvar.go",
+      "pkg/sessionctx/variable/sysvar.go",
+      "pkg/sessionctx/variable/tests/BUILD.bazel",
+      "pkg/sessionctx/variable/tests/session_test.go",
+      "pkg/sessionctx/variable/tests/variable_test.go",
+      "pkg/testkit/testutil/require.go"
+    ],
+    "dependency_chain": [
+      "pkg/executor/BUILD.bazel",
+      "pkg/executor/adapter_slow_log.go",
+      "pkg/executor/slow_query.go",
+      "pkg/infoschema/tables.go",
+      "pkg/server/internal/parse/BUILD.bazel",
+      "pkg/server/internal/parse/parse.go",
+      "pkg/sessionctx/vardef/sysvar.go",
+      "pkg/sessionctx/vardef/tidb_vars.go",
+      "pkg/sessionctx/variable/noop.go",
+      "pkg/sessionctx/variable/slow_log.go",
+      "pkg/sessionctx/variable/statusvar.go",
+      "pkg/sessionctx/variable/sysvar.go",
+      "pkg/testkit/testutil/require.go"
+    ],
+    "min_context_tokens": 48000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

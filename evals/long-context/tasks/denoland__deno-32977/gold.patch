@@ -1,0 +1,341 @@
+From 802c90939d6ac91a6607290123cf61af1373ffae Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bartek=20Iwa=C5=84czuk?= <biwanczuk@gmail.com>
+Date: Wed, 25 Mar 2026 08:22:27 +0100
+Subject: [PATCH 1/4] fix(resolver): prefer exact version match in BYONM npm
+ resolution
+
+When resolving npm packages in BYONM (nodeModulesDir: "manual") mode,
+the resolver scans node_modules/.deno/ for matching versions and returns
+the highest one that satisfies the version requirement. This causes
+`deno run npm:pkg@1.3.5` to pick a higher cached version (e.g. 1.3.6)
+instead of the exact requested version.
+
+Fix: when the version requirement text parses as an exact version and
+matches a directory entry exactly, prefer that match and stop searching.
+This ensures `npm:pkg@1.3.5` returns 1.3.5 when it exists, not a higher
+version.
+
+Fixes #32972
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ libs/resolver/npm/byonm.rs | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/libs/resolver/npm/byonm.rs b/libs/resolver/npm/byonm.rs
+index c55890cfd190a7..e10cc2ecf16059 100644
+--- a/libs/resolver/npm/byonm.rs
++++ b/libs/resolver/npm/byonm.rs
+@@ -368,6 +368,17 @@ impl<TSys: ByonmNpmResolverSys> ByonmNpmResolver<TSys> {
+           }
+         }
+       } else if req.version_req.matches(&version) {
++        // Prefer an exact version match over the highest matching version.
++        // When a user specifies `npm:pkg@1.3.5`, the version_text is "1.3.5"
++        // and we should return that exact version if it exists, not a higher
++        // one that also satisfies the range.
++        let is_exact =
++          Version::parse_from_npm(req.version_req.version_text())
++            .is_ok_and(|v| v == version);
++        if is_exact {
++          best_version = Some((version, entry_name));
++          break;
++        }
+         if let Some((best_version_version, _)) = &best_version {
+           if version > *best_version_version {
+             best_version = Some((version, entry_name));
+
+From ff924ded7e2be8405b6aa47f3f9f4108735d9a51 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bartek=20Iwa=C5=84czuk?= <biwanczuk@gmail.com>
+Date: Wed, 25 Mar 2026 08:30:32 +0100
+Subject: [PATCH 2/4] test: add spec test for BYONM exact version resolution
+
+Regression test for #32972. Sets up node_modules/.deno/ with two
+versions of @denotest/add (0.5.0 and 1.0.0), then verifies that
+importing npm:@denotest/add@0.5.0 resolves to 0.5.0 instead of
+the higher 1.0.0.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ .../run/byonm_exact_version/__test__.jsonc    | 20 +++++++++
+ tests/specs/run/byonm_exact_version/deno.json |  3 ++
+ tests/specs/run/byonm_exact_version/main.ts   |  2 +
+ tests/specs/run/byonm_exact_version/setup.ts  | 44 +++++++++++++++++++
+ 4 files changed, 69 insertions(+)
+ create mode 100644 tests/specs/run/byonm_exact_version/__test__.jsonc
+ create mode 100644 tests/specs/run/byonm_exact_version/deno.json
+ create mode 100644 tests/specs/run/byonm_exact_version/main.ts
+ create mode 100644 tests/specs/run/byonm_exact_version/setup.ts
+
+diff --git a/tests/specs/run/byonm_exact_version/__test__.jsonc b/tests/specs/run/byonm_exact_version/__test__.jsonc
+new file mode 100644
+index 00000000000000..71947e29a94b47
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/__test__.jsonc
+@@ -0,0 +1,20 @@
++{
++  "tempDir": true,
++  "tests": {
++    "exact_version_in_byonm": {
++      "steps": [
++        {
++          // Set up node_modules/.deno/ with both 0.5.0 and 1.0.0
++          "args": "run -A setup.ts",
++          "output": "setup done\n"
++        },
++        {
++          // Import npm:@denotest/add@0.5.0 should resolve to 0.5.0
++          // even though 1.0.0 also exists and is higher.
++          "args": "run -A main.ts",
++          "output": "0.5.0\n"
++        }
++      ]
++    }
++  }
++}
+diff --git a/tests/specs/run/byonm_exact_version/deno.json b/tests/specs/run/byonm_exact_version/deno.json
+new file mode 100644
+index 00000000000000..fde86a1efb656b
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/deno.json
+@@ -0,0 +1,3 @@
++{
++  "nodeModulesDir": "manual"
++}
+diff --git a/tests/specs/run/byonm_exact_version/main.ts b/tests/specs/run/byonm_exact_version/main.ts
+new file mode 100644
+index 00000000000000..ee2e9ee5cd3a08
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/main.ts
+@@ -0,0 +1,2 @@
++import addPkg from "npm:@denotest/add@0.5.0/package.json" with { type: "json" };
++console.log(addPkg.version);
+diff --git a/tests/specs/run/byonm_exact_version/setup.ts b/tests/specs/run/byonm_exact_version/setup.ts
+new file mode 100644
+index 00000000000000..0f3ea4eb91ddb2
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/setup.ts
+@@ -0,0 +1,44 @@
++// Sets up node_modules/.deno/ with two versions of @denotest/add
++// to test that exact version specifiers are resolved correctly.
++
++const dir = Deno.cwd();
++
++// Create node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/
++const v1Path =
++  `${dir}/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add`;
++await Deno.mkdir(v1Path, { recursive: true });
++await Deno.writeTextFile(
++  `${v1Path}/package.json`,
++  JSON.stringify({ name: "@denotest/add", version: "1.0.0" }),
++);
++await Deno.writeTextFile(
++  `${v1Path}/index.js`,
++  'module.exports.add = (a, b) => a + b;\nmodule.exports.version = "1.0.0";\n',
++);
++
++// Create node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/
++const v05Path =
++  `${dir}/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add`;
++await Deno.mkdir(v05Path, { recursive: true });
++await Deno.writeTextFile(
++  `${v05Path}/package.json`,
++  JSON.stringify({ name: "@denotest/add", version: "0.5.0" }),
++);
++await Deno.writeTextFile(
++  `${v05Path}/index.js`,
++  'module.exports.sum = (a, b) => a + b;\nmodule.exports.version = "0.5.0";\n',
++);
++
++// Create the top-level node_modules/@denotest/add symlink pointing to 1.0.0
++// (simulates what `deno install` would create for the latest version)
++const topPath = `${dir}/node_modules/@denotest/add`;
++await Deno.mkdir(`${dir}/node_modules/@denotest`, { recursive: true });
++try {
++  await Deno.remove(topPath, { recursive: true });
++} catch { /* ignore */ }
++await Deno.symlink(
++  `${dir}/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add`,
++  topPath,
++);
++
++console.log("setup done");
+
+From 24cf4037f261cbe6f0f16380bf8c202dd15cab2b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bartek=20Iwa=C5=84czuk?= <biwanczuk@gmail.com>
+Date: Wed, 25 Mar 2026 08:31:50 +0100
+Subject: [PATCH 3/4] fmt
+
+---
+ libs/resolver/npm/byonm.rs | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/libs/resolver/npm/byonm.rs b/libs/resolver/npm/byonm.rs
+index e10cc2ecf16059..96f4035235685c 100644
+--- a/libs/resolver/npm/byonm.rs
++++ b/libs/resolver/npm/byonm.rs
+@@ -372,9 +372,8 @@ impl<TSys: ByonmNpmResolverSys> ByonmNpmResolver<TSys> {
+         // When a user specifies `npm:pkg@1.3.5`, the version_text is "1.3.5"
+         // and we should return that exact version if it exists, not a higher
+         // one that also satisfies the range.
+-        let is_exact =
+-          Version::parse_from_npm(req.version_req.version_text())
+-            .is_ok_and(|v| v == version);
++        let is_exact = Version::parse_from_npm(req.version_req.version_text())
++          .is_ok_and(|v| v == version);
+         if is_exact {
+           best_version = Some((version, entry_name));
+           break;
+
+From b5c36db7246c8e8a374e756151aeb53eba68a850 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bartek=20Iwa=C5=84czuk?= <biwanczuk@gmail.com>
+Date: Wed, 25 Mar 2026 08:41:13 +0100
+Subject: [PATCH 4/4] test: use static node_modules structure for BYONM spec
+ test
+
+Replace the setup.ts script with a pre-built node_modules directory
+structure committed directly in the spec test directory.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ .../run/byonm_exact_version/__test__.jsonc    | 18 ++------
+ .../node_modules/@denotest/add/index.js       |  2 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ .../node_modules/@denotest/add/index.js       |  2 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ .../node_modules/@denotest/add/index.js       |  2 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ tests/specs/run/byonm_exact_version/setup.ts  | 44 -------------------
+ 8 files changed, 13 insertions(+), 58 deletions(-)
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/run/byonm_exact_version/node_modules/@denotest/add/package.json
+ delete mode 100644 tests/specs/run/byonm_exact_version/setup.ts
+
+diff --git a/tests/specs/run/byonm_exact_version/__test__.jsonc b/tests/specs/run/byonm_exact_version/__test__.jsonc
+index 71947e29a94b47..2604936abaa690 100644
+--- a/tests/specs/run/byonm_exact_version/__test__.jsonc
++++ b/tests/specs/run/byonm_exact_version/__test__.jsonc
+@@ -1,20 +1,10 @@
+ {
+-  "tempDir": true,
+   "tests": {
+     "exact_version_in_byonm": {
+-      "steps": [
+-        {
+-          // Set up node_modules/.deno/ with both 0.5.0 and 1.0.0
+-          "args": "run -A setup.ts",
+-          "output": "setup done\n"
+-        },
+-        {
+-          // Import npm:@denotest/add@0.5.0 should resolve to 0.5.0
+-          // even though 1.0.0 also exists and is higher.
+-          "args": "run -A main.ts",
+-          "output": "0.5.0\n"
+-        }
+-      ]
++      // Import npm:@denotest/add@0.5.0 should resolve to 0.5.0
++      // even though 1.0.0 also exists in node_modules/.deno/ and is higher.
++      "args": "run -A main.ts",
++      "output": "0.5.0\n"
+     }
+   }
+ }
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..eb4321eabde996
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+@@ -0,0 +1,2 @@
++module.exports.sum = (a, b) => a + b;
++module.exports.version = "0.5.0";
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..c0225efdc579c4
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "0.5.0" }
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..413265e654e9b7
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+@@ -0,0 +1,2 @@
++module.exports.add = (a, b) => a + b;
++module.exports.version = "1.0.0";
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..204a0738c6271d
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "1.0.0" }
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/index.js b/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..413265e654e9b7
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/index.js
+@@ -0,0 +1,2 @@
++module.exports.add = (a, b) => a + b;
++module.exports.version = "1.0.0";
+diff --git a/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/package.json b/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..204a0738c6271d
+--- /dev/null
++++ b/tests/specs/run/byonm_exact_version/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "1.0.0" }
+diff --git a/tests/specs/run/byonm_exact_version/setup.ts b/tests/specs/run/byonm_exact_version/setup.ts
+deleted file mode 100644
+index 0f3ea4eb91ddb2..00000000000000
+--- a/tests/specs/run/byonm_exact_version/setup.ts
++++ /dev/null
+@@ -1,44 +0,0 @@
+-// Sets up node_modules/.deno/ with two versions of @denotest/add
+-// to test that exact version specifiers are resolved correctly.
+-
+-const dir = Deno.cwd();
+-
+-// Create node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/
+-const v1Path =
+-  `${dir}/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add`;
+-await Deno.mkdir(v1Path, { recursive: true });
+-await Deno.writeTextFile(
+-  `${v1Path}/package.json`,
+-  JSON.stringify({ name: "@denotest/add", version: "1.0.0" }),
+-);
+-await Deno.writeTextFile(
+-  `${v1Path}/index.js`,
+-  'module.exports.add = (a, b) => a + b;\nmodule.exports.version = "1.0.0";\n',
+-);
+-
+-// Create node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/
+-const v05Path =
+-  `${dir}/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add`;
+-await Deno.mkdir(v05Path, { recursive: true });
+-await Deno.writeTextFile(
+-  `${v05Path}/package.json`,
+-  JSON.stringify({ name: "@denotest/add", version: "0.5.0" }),
+-);
+-await Deno.writeTextFile(
+-  `${v05Path}/index.js`,
+-  'module.exports.sum = (a, b) => a + b;\nmodule.exports.version = "0.5.0";\n',
+-);
+-
+-// Create the top-level node_modules/@denotest/add symlink pointing to 1.0.0
+-// (simulates what `deno install` would create for the latest version)
+-const topPath = `${dir}/node_modules/@denotest/add`;
+-await Deno.mkdir(`${dir}/node_modules/@denotest`, { recursive: true });
+-try {
+-  await Deno.remove(topPath, { recursive: true });
+-} catch { /* ignore */ }
+-await Deno.symlink(
+-  `${dir}/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add`,
+-  topPath,
+-);
+-
+-console.log("setup done");

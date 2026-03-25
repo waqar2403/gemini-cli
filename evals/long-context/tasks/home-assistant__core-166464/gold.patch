@@ -1,0 +1,254 @@
+From 6b737bf0a0fb0aae3e61c27d06bcd59948dca6be Mon Sep 17 00:00:00 2001
+From: Ariel Ebersberger <ariel@ebersberger.io>
+Date: Wed, 25 Mar 2026 11:44:28 +0100
+Subject: [PATCH] Add humidifier condition
+
+---
+ .../components/humidifier/condition.py        | 16 +++-
+ .../components/humidifier/conditions.yaml     | 33 +++++++-
+ .../components/humidifier/icons.json          |  3 +
+ .../components/humidifier/strings.json        | 18 +++++
+ tests/components/humidifier/test_condition.py | 81 ++++++++++++++++++-
+ 5 files changed, 144 insertions(+), 7 deletions(-)
+
+diff --git a/homeassistant/components/humidifier/condition.py b/homeassistant/components/humidifier/condition.py
+index f29100ae40256..a787bd3d1f56e 100644
+--- a/homeassistant/components/humidifier/condition.py
++++ b/homeassistant/components/humidifier/condition.py
+@@ -1,11 +1,15 @@
+ """Provides conditions for humidifiers."""
+ 
+-from homeassistant.const import STATE_OFF, STATE_ON
++from homeassistant.const import PERCENTAGE, STATE_OFF, STATE_ON
+ from homeassistant.core import HomeAssistant
+-from homeassistant.helpers.automation import DomainSpec
+-from homeassistant.helpers.condition import Condition, make_entity_state_condition
++from homeassistant.helpers.automation import DomainSpec, NumericalDomainSpec
++from homeassistant.helpers.condition import (
++    Condition,
++    make_entity_numerical_condition,
++    make_entity_state_condition,
++)
+ 
+-from .const import ATTR_ACTION, DOMAIN, HumidifierAction
++from .const import ATTR_ACTION, ATTR_HUMIDITY, DOMAIN, HumidifierAction
+ 
+ CONDITIONS: dict[str, type[Condition]] = {
+     "is_off": make_entity_state_condition(DOMAIN, STATE_OFF),
+@@ -16,6 +20,10 @@
+     "is_humidifying": make_entity_state_condition(
+         {DOMAIN: DomainSpec(value_source=ATTR_ACTION)}, HumidifierAction.HUMIDIFYING
+     ),
++    "is_target_humidity": make_entity_numerical_condition(
++        {DOMAIN: NumericalDomainSpec(value_source=ATTR_HUMIDITY)},
++        valid_unit=PERCENTAGE,
++    ),
+ }
+ 
+ 
+diff --git a/homeassistant/components/humidifier/conditions.yaml b/homeassistant/components/humidifier/conditions.yaml
+index ca80146d18460..6ed179e3caad3 100644
+--- a/homeassistant/components/humidifier/conditions.yaml
++++ b/homeassistant/components/humidifier/conditions.yaml
+@@ -1,9 +1,9 @@
+ .condition_common: &condition_common
+-  target:
++  target: &condition_humidifier_target
+     entity:
+       domain: humidifier
+   fields:
+-    behavior:
++    behavior: &condition_behavior
+       required: true
+       default: any
+       selector:
+@@ -13,7 +13,36 @@
+             - all
+             - any
+ 
++.number_or_entity: &number_or_entity
++  required: false
++  selector:
++    choose:
++      choices:
++        number:
++          selector:
++            number:
++              mode: box
++              unit_of_measurement: "%"
++        entity:
++          selector:
++            entity:
++              filter:
++                - domain: input_number
++                  unit_of_measurement: "%"
++                - domain: sensor
++                  device_class: humidity
++                - domain: number
++                  device_class: humidity
++      translation_key: number_or_entity
++
+ is_off: *condition_common
+ is_on: *condition_common
+ is_drying: *condition_common
+ is_humidifying: *condition_common
++
++is_target_humidity:
++  target: *condition_humidifier_target
++  fields:
++    behavior: *condition_behavior
++    above: *number_or_entity
++    below: *number_or_entity
+diff --git a/homeassistant/components/humidifier/icons.json b/homeassistant/components/humidifier/icons.json
+index 1154bfa5e195a..fde5c3c959868 100644
+--- a/homeassistant/components/humidifier/icons.json
++++ b/homeassistant/components/humidifier/icons.json
+@@ -11,6 +11,9 @@
+     },
+     "is_on": {
+       "condition": "mdi:air-humidifier"
++    },
++    "is_target_humidity": {
++      "condition": "mdi:water-percent"
+     }
+   },
+   "entity_component": {
+diff --git a/homeassistant/components/humidifier/strings.json b/homeassistant/components/humidifier/strings.json
+index df2e39286e329..cf5bd9e1b2411 100644
+--- a/homeassistant/components/humidifier/strings.json
++++ b/homeassistant/components/humidifier/strings.json
+@@ -45,6 +45,24 @@
+         }
+       },
+       "name": "Humidifier is on"
++    },
++    "is_target_humidity": {
++      "description": "Tests the target humidity of one or more humidifiers.",
++      "fields": {
++        "above": {
++          "description": "Require the target humidity to be above this value.",
++          "name": "Above"
++        },
++        "behavior": {
++          "description": "[%key:component::humidifier::common::condition_behavior_description%]",
++          "name": "[%key:component::humidifier::common::condition_behavior_name%]"
++        },
++        "below": {
++          "description": "Require the target humidity to be below this value.",
++          "name": "Below"
++        }
++      },
++      "name": "Humidifier target humidity"
+     }
+   },
+   "device_automation": {
+diff --git a/tests/components/humidifier/test_condition.py b/tests/components/humidifier/test_condition.py
+index dc61566edc72c..98e27a406a9d7 100644
+--- a/tests/components/humidifier/test_condition.py
++++ b/tests/components/humidifier/test_condition.py
+@@ -4,7 +4,11 @@
+ 
+ import pytest
+ 
+-from homeassistant.components.humidifier.const import ATTR_ACTION, HumidifierAction
++from homeassistant.components.humidifier.const import (
++    ATTR_ACTION,
++    ATTR_HUMIDITY,
++    HumidifierAction,
++)
+ from homeassistant.const import STATE_OFF, STATE_ON
+ from homeassistant.core import HomeAssistant
+ 
+@@ -15,6 +19,8 @@
+     assert_condition_gated_by_labs_flag,
+     parametrize_condition_states_all,
+     parametrize_condition_states_any,
++    parametrize_numerical_attribute_condition_above_below_all,
++    parametrize_numerical_attribute_condition_above_below_any,
+     parametrize_target_entities,
+     target_entities,
+ )
+@@ -33,6 +39,7 @@ async def target_humidifiers(hass: HomeAssistant) -> dict[str, list[str]]:
+         "humidifier.is_on",
+         "humidifier.is_drying",
+         "humidifier.is_humidifying",
++        "humidifier.is_target_humidity",
+     ],
+ )
+ async def test_humidifier_conditions_gated_by_labs_flag(
+@@ -212,3 +219,75 @@ async def test_humidifier_attribute_condition_behavior_all(
+         condition_options=condition_options,
+         states=states,
+     )
++
++
++@pytest.mark.usefixtures("enable_labs_preview_features")
++@pytest.mark.parametrize(
++    ("condition_target_config", "entity_id", "entities_in_target"),
++    parametrize_target_entities("humidifier"),
++)
++@pytest.mark.parametrize(
++    ("condition", "condition_options", "states"),
++    parametrize_numerical_attribute_condition_above_below_any(
++        "humidifier.is_target_humidity",
++        STATE_ON,
++        ATTR_HUMIDITY,
++    ),
++)
++async def test_humidifier_numerical_condition_behavior_any(
++    hass: HomeAssistant,
++    target_humidifiers: dict[str, list[str]],
++    condition_target_config: dict,
++    entity_id: str,
++    entities_in_target: int,
++    condition: str,
++    condition_options: dict[str, Any],
++    states: list[ConditionStateDescription],
++) -> None:
++    """Test the humidifier numerical condition with the 'any' behavior."""
++    await assert_condition_behavior_any(
++        hass,
++        target_entities=target_humidifiers,
++        condition_target_config=condition_target_config,
++        entity_id=entity_id,
++        entities_in_target=entities_in_target,
++        condition=condition,
++        condition_options=condition_options,
++        states=states,
++    )
++
++
++@pytest.mark.usefixtures("enable_labs_preview_features")
++@pytest.mark.parametrize(
++    ("condition_target_config", "entity_id", "entities_in_target"),
++    parametrize_target_entities("humidifier"),
++)
++@pytest.mark.parametrize(
++    ("condition", "condition_options", "states"),
++    parametrize_numerical_attribute_condition_above_below_all(
++        "humidifier.is_target_humidity",
++        STATE_ON,
++        ATTR_HUMIDITY,
++    ),
++)
++async def test_humidifier_numerical_condition_behavior_all(
++    hass: HomeAssistant,
++    target_humidifiers: dict[str, list[str]],
++    condition_target_config: dict,
++    entity_id: str,
++    entities_in_target: int,
++    condition: str,
++    condition_options: dict[str, Any],
++    states: list[ConditionStateDescription],
++) -> None:
++    """Test the humidifier numerical condition with the 'all' behavior."""
++    await assert_condition_behavior_all(
++        hass,
++        target_entities=target_humidifiers,
++        condition_target_config=condition_target_config,
++        entity_id=entity_id,
++        entities_in_target=entities_in_target,
++        condition=condition,
++        condition_options=condition_options,
++        states=states,
++    )

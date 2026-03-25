@@ -1,0 +1,410 @@
+From 84366f2b04e7286248c1e8093992fb21cc9edca1 Mon Sep 17 00:00:00 2001
+From: wxiaoguang <wxiaoguang@gmail.com>
+Date: Sat, 24 Jan 2026 13:25:20 +0800
+Subject: [PATCH 1/4] fix
+
+---
+ modules/markup/html.go                        |  2 +-
+ modules/markup/html_commit.go                 | 45 +++++++++++++------
+ modules/markup/html_test.go                   | 10 +++++
+ modules/templates/helper_test.go              |  7 +++
+ options/locale/locale_en-US.json              |  1 +
+ templates/repo/issue/search.tmpl              |  2 +-
+ web_src/css/base.css                          |  2 +-
+ web_src/js/features/admin/common.ts           |  3 +-
+ web_src/js/features/common-issue-list.test.ts |  2 +-
+ web_src/js/features/common-issue-list.ts      | 40 ++++++-----------
+ web_src/js/utils.test.ts                      |  7 +++
+ web_src/js/utils.ts                           |  9 ++++
+ 12 files changed, 86 insertions(+), 44 deletions(-)
+
+diff --git a/modules/markup/html.go b/modules/markup/html.go
+index 8486dd7e31d7c..1c2ae6918deff 100644
+--- a/modules/markup/html.go
++++ b/modules/markup/html.go
+@@ -62,7 +62,7 @@ var globalVars = sync.OnceValue(func() *globalVarsType {
+ 	v.shortLinkPattern = regexp.MustCompile(`\[\[(.*?)\]\](\w*)`)
+ 
+ 	// anyHashPattern splits url containing SHA into parts
+-	v.anyHashPattern = regexp.MustCompile(`https?://(?:\S+/){4,5}([0-9a-f]{40,64})(/[-+~%./\w]+)?(\?[-+~%.\w&=]+)?(#[-+~%.\w]+)?`)
++	v.anyHashPattern = regexp.MustCompile(`https?://(?:\S+/){4,5}([0-9a-f]{40,64})((\.\w+)*)(/[-+~%./\w]+)?(\?[-+~%.\w&=]+)?(#[-+~%.\w]+)?`)
+ 
+ 	// comparePattern matches "http://domain/org/repo/compare/COMMIT1...COMMIT2#hash"
+ 	v.comparePattern = regexp.MustCompile(`https?://(?:\S+/){4,5}([0-9a-f]{7,64})(\.\.\.?)([0-9a-f]{7,64})?(#[-+~_%.a-zA-Z0-9]+)?`)
+diff --git a/modules/markup/html_commit.go b/modules/markup/html_commit.go
+index fe7a034967abe..0a9b329589e1b 100644
+--- a/modules/markup/html_commit.go
++++ b/modules/markup/html_commit.go
+@@ -16,12 +16,14 @@ import (
+ )
+ 
+ type anyHashPatternResult struct {
+-	PosStart  int
+-	PosEnd    int
+-	FullURL   string
+-	CommitID  string
+-	SubPath   string
+-	QueryHash string
++	PosStart    int
++	PosEnd      int
++	FullURL     string
++	CommitID    string
++	CommitExt   string
++	SubPath     string
++	QueryParams string
++	QueryHash   string
+ }
+ 
+ func createCodeLink(href, content, class string) *html.Node {
+@@ -56,7 +58,11 @@ func anyHashPatternExtract(s string) (ret anyHashPatternResult, ok bool) {
+ 		return ret, false
+ 	}
+ 
+-	ret.PosStart, ret.PosEnd = m[0], m[1]
++	pos := 0
++
++	ret.PosStart, ret.PosEnd = m[pos], m[pos+1]
++	pos += 2
++
+ 	ret.FullURL = s[ret.PosStart:ret.PosEnd]
+ 	if strings.HasSuffix(ret.FullURL, ".") {
+ 		// if url ends in '.', it's very likely that it is not part of the actual url but used to finish a sentence.
+@@ -67,14 +73,24 @@ func anyHashPatternExtract(s string) (ret anyHashPatternResult, ok bool) {
+ 		}
+ 	}
+ 
+-	ret.CommitID = s[m[2]:m[3]]
+-	if m[5] > 0 {
+-		ret.SubPath = s[m[4]:m[5]]
++	ret.CommitID = s[m[pos]:m[pos+1]]
++	pos += 2
++
++	ret.CommitExt = s[m[pos]:m[pos+1]]
++	pos += 4
++
++	if m[pos] > 0 {
++		ret.SubPath = s[m[pos]:m[pos+1]]
+ 	}
++	pos += 2
+ 
+-	lastStart, lastEnd := m[len(m)-2], m[len(m)-1]
+-	if lastEnd > 0 {
+-		ret.QueryHash = s[lastStart:lastEnd][1:]
++	if m[pos] > 0 {
++		ret.QueryParams = s[m[pos]:m[pos+1]]
++	}
++	pos += 2
++
++	if m[pos] > 0 {
++		ret.QueryHash = s[m[pos]:m[pos+1]][1:]
+ 	}
+ 	return ret, true
+ }
+@@ -96,6 +112,9 @@ func fullHashPatternProcessor(ctx *RenderContext, node *html.Node) {
+ 			continue
+ 		}
+ 		text := base.ShortSha(ret.CommitID)
++		if ret.CommitExt != "" {
++			text += ret.CommitExt
++		}
+ 		if ret.SubPath != "" {
+ 			text += ret.SubPath
+ 		}
+diff --git a/modules/markup/html_test.go b/modules/markup/html_test.go
+index 08b050baae15c..76013ccd13dbb 100644
+--- a/modules/markup/html_test.go
++++ b/modules/markup/html_test.go
+@@ -102,6 +102,16 @@ func TestRender_CrossReferences(t *testing.T) {
+ 	test(
+ 		inputURL,
+ 		`<p><a href="`+inputURL+`" rel="nofollow"><code>0123456789/foo.txt (L2-L3)</code></a></p>`)
++
++	inputURL = "https://example.com/repo/owner/archive/0123456789012345678901234567890123456789.tar.gz"
++	test(
++		inputURL,
++		`<p><a href="`+inputURL+`" rel="nofollow"><code>0123456789.tar.gz</code></a></p>`)
++
++	inputURL = "https://example.com/owner/repo/commit/0123456789012345678901234567890123456789.patch?key=val"
++	test(
++		inputURL,
++		`<p><a href="`+inputURL+`" rel="nofollow"><code>0123456789.patch</code></a></p>`)
+ }
+ 
+ func TestRender_links(t *testing.T) {
+diff --git a/modules/templates/helper_test.go b/modules/templates/helper_test.go
+index 7e3a952e7b728..f90818c0ad955 100644
+--- a/modules/templates/helper_test.go
++++ b/modules/templates/helper_test.go
+@@ -168,3 +168,10 @@ func TestQueryBuild(t *testing.T) {
+ 		assert.Equal(t, "&a=b&c=d&e=f", string(QueryBuild("&a=b&c=d&e=f", "k", "")))
+ 	})
+ }
++
++func TestQueryEscape(t *testing.T) {
++	// this test is a reference for "urlQueryEscape" in JS
++	in := "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" // all non-letter & non-number chars
++	expected := "%21%22%23%24%25%26%27%28%29%2A%2B%2C-.%2F%3A%3B%3C%3D%3E%3F%40%5B%5C%5D%5E_%60%7B%7C%7D~"
++	assert.Equal(t, expected, string(queryEscape(in)))
++}
+diff --git a/options/locale/locale_en-US.json b/options/locale/locale_en-US.json
+index 239e98c1b7091..b9329a921287b 100644
+--- a/options/locale/locale_en-US.json
++++ b/options/locale/locale_en-US.json
+@@ -1490,6 +1490,7 @@
+   "repo.issues.filter_sort.feweststars": "Fewest stars",
+   "repo.issues.filter_sort.mostforks": "Most forks",
+   "repo.issues.filter_sort.fewestforks": "Fewest forks",
++  "repo.issues.quick_goto": "Goto issue",
+   "repo.issues.action_open": "Open",
+   "repo.issues.action_close": "Close",
+   "repo.issues.action_label": "Label",
+diff --git a/templates/repo/issue/search.tmpl b/templates/repo/issue/search.tmpl
+index de6c194ee8c13..1565a38ea1b8c 100644
+--- a/templates/repo/issue/search.tmpl
++++ b/templates/repo/issue/search.tmpl
+@@ -12,7 +12,7 @@
+ 		{{end}}
+ 		{{template "shared/search/input" dict "Value" .Keyword}}
+ 		{{if .PageIsIssueList}}
+-			<button id="issue-list-quick-goto" class="ui small icon button tw-hidden" data-tooltip-content="{{ctx.Locale.Tr "explore.go_to"}}" data-repo-link="{{.RepoLink}}">{{svg "octicon-hash"}}</button>
++			<button id="issue-list-quick-goto" type="button" class="ui small icon button tw-hidden tw-mr-[-1px]" data-repo-link="{{.RepoLink}}">{{svg "octicon-hash" 12}} {{ctx.Locale.Tr "repo.issues.quick_goto"}}</button>
+ 		{{end}}
+ 		{{template "shared/search/button"}}
+ 	</div>
+diff --git a/web_src/css/base.css b/web_src/css/base.css
+index ef55be9f2d86d..39aa72eea8baa 100644
+--- a/web_src/css/base.css
++++ b/web_src/css/base.css
+@@ -109,7 +109,7 @@ TODO: in the future, we should use `div` instead of `code` for `.code-inner` bec
+ code:not(.code-inner) {
+   padding: 1px 4px;
+   border-radius: var(--border-radius);
+-  background-color: var(--color-label-bg);
++  background-color: var(--color-markup-code-inline);
+ }
+ 
+ b,
+diff --git a/web_src/js/features/admin/common.ts b/web_src/js/features/admin/common.ts
+index 512acb792f85f..ba4cf19446ce9 100644
+--- a/web_src/js/features/admin/common.ts
++++ b/web_src/js/features/admin/common.ts
+@@ -2,6 +2,7 @@ import {checkAppUrl} from '../common-page.ts';
+ import {hideElem, queryElems, showElem, toggleElem} from '../../utils/dom.ts';
+ import {POST} from '../../modules/fetch.ts';
+ import {fomanticQuery} from '../../modules/fomantic/base.ts';
++import {urlQueryEscape} from '../../utils.ts';
+ 
+ const {appSubUrl} = window.config;
+ 
+@@ -230,7 +231,7 @@ function initAdminAuthentication() {
+   const elAuthName = document.querySelector<HTMLInputElement>('#auth_name')!;
+   const onAuthNameChange = function () {
+     // appSubUrl is either empty or is a path that starts with `/` and doesn't have a trailing slash.
+-    document.querySelector('#oauth2-callback-url')!.textContent = `${window.location.origin}${appSubUrl}/user/oauth2/${encodeURIComponent(elAuthName.value)}/callback`;
++    document.querySelector('#oauth2-callback-url')!.textContent = `${window.location.origin}${appSubUrl}/user/oauth2/${urlQueryEscape(elAuthName.value)}/callback`;
+   };
+   elAuthName.addEventListener('input', onAuthNameChange);
+   onAuthNameChange();
+diff --git a/web_src/js/features/common-issue-list.test.ts b/web_src/js/features/common-issue-list.test.ts
+index a4c49a297e10a..af8b3e375058a 100644
+--- a/web_src/js/features/common-issue-list.test.ts
++++ b/web_src/js/features/common-issue-list.test.ts
+@@ -5,7 +5,7 @@ test('parseIssueListQuickGotoLink', () => {
+   expect(parseIssueListQuickGotoLink('/link', 'abc')).toEqual('');
+   expect(parseIssueListQuickGotoLink('/link', '123')).toEqual('/link/issues/123');
+   expect(parseIssueListQuickGotoLink('/link', '#123')).toEqual('/link/issues/123');
+-  expect(parseIssueListQuickGotoLink('/link', 'owner/repo#123')).toEqual('');
++  expect(parseIssueListQuickGotoLink('/link', 'owner/repo#123')).toEqual('/owner/repo/issues/123');
+ 
+   expect(parseIssueListQuickGotoLink('', '')).toEqual('');
+   expect(parseIssueListQuickGotoLink('', 'abc')).toEqual('');
+diff --git a/web_src/js/features/common-issue-list.ts b/web_src/js/features/common-issue-list.ts
+index 8e6000f05084b..069113801f125 100644
+--- a/web_src/js/features/common-issue-list.ts
++++ b/web_src/js/features/common-issue-list.ts
+@@ -1,4 +1,4 @@
+-import {isElemVisible, onInputDebounce, submitEventSubmitter, toggleElem} from '../utils/dom.ts';
++import {onInputDebounce, toggleElem} from '../utils/dom.ts';
+ import {GET} from '../modules/fetch.ts';
+ 
+ const {appSubUrl} = window.config;
+@@ -17,37 +17,25 @@ export function parseIssueListQuickGotoLink(repoLink: string, searchText: string
+     } else if (reIssueSharpIndex.test(searchText)) {
+       targetUrl = `${repoLink}/issues/${searchText.substring(1)}`;
+     }
+-  } else {
+-    // try to parse it for a global search (eg: "owner/repo#123")
+-    const [_, owner, repo, index] = reIssueOwnerRepoIndex.exec(searchText) || [];
+-    if (owner) {
+-      targetUrl = `${appSubUrl}/${owner}/${repo}/issues/${index}`;
+-    }
++  }
++  // try to parse it for a global search (eg: "owner/repo#123")
++  const [_, owner, repo, index] = reIssueOwnerRepoIndex.exec(searchText) || [];
++  if (owner) {
++    targetUrl = `${appSubUrl}/${owner}/${repo}/issues/${index}`;
+   }
+   return targetUrl;
+ }
+ 
+ export function initCommonIssueListQuickGoto() {
+-  const goto = document.querySelector<HTMLElement>('#issue-list-quick-goto');
+-  if (!goto) return;
++  const elGotoButton = document.querySelector<HTMLElement>('#issue-list-quick-goto');
++  if (!elGotoButton) return;
+ 
+-  const form = goto.closest('form')!;
++  const form = elGotoButton.closest('form')!;
+   const input = form.querySelector<HTMLInputElement>('input[name=q]')!;
+-  const repoLink = goto.getAttribute('data-repo-link')!;
++  const repoLink = elGotoButton.getAttribute('data-repo-link') || '';
+ 
+-  form.addEventListener('submit', (e) => {
+-    // if there is no goto button, or the form is submitted by non-quick-goto elements, submit the form directly
+-    let doQuickGoto = isElemVisible(goto);
+-    const submitter = submitEventSubmitter(e);
+-    if (submitter !== form && submitter !== input && submitter !== goto) doQuickGoto = false;
+-    if (!doQuickGoto) return;
+-
+-    // if there is a goto button, use its link
+-    e.preventDefault();
+-    const link = goto.getAttribute('data-issue-goto-link');
+-    if (link) {
+-      window.location.href = link;
+-    }
++  elGotoButton.addEventListener('click', () => {
++    window.location.href = elGotoButton.getAttribute('data-issue-goto-link')!;
+   });
+ 
+   const onInput = async () => {
+@@ -61,8 +49,8 @@ export function initCommonIssueListQuickGoto() {
+     // if the input value has changed, then ignore the result
+     if (input.value !== searchText) return;
+ 
+-    toggleElem(goto, Boolean(targetUrl));
+-    goto.setAttribute('data-issue-goto-link', targetUrl);
++    toggleElem(elGotoButton, Boolean(targetUrl));
++    elGotoButton.setAttribute('data-issue-goto-link', targetUrl);
+   };
+ 
+   input.addEventListener('input', onInputDebounce(onInput));
+diff --git a/web_src/js/utils.test.ts b/web_src/js/utils.test.ts
+index f1025471a44b4..edfc76314806f 100644
+--- a/web_src/js/utils.test.ts
++++ b/web_src/js/utils.test.ts
+@@ -2,6 +2,7 @@ import {
+   dirname, basename, extname, isObject, stripTags, parseIssueHref,
+   parseUrl, translateMonth, translateDay, blobToDataURI,
+   toAbsoluteUrl, encodeURLEncodedBase64, decodeURLEncodedBase64, isImageFile, isVideoFile, parseRepoOwnerPathInfo,
++  urlQueryEscape,
+ } from './utils.ts';
+ 
+ test('dirname', () => {
+@@ -33,6 +34,12 @@ test('stripTags', () => {
+   expect(stripTags('<a>test</a>')).toEqual('test');
+ });
+ 
++test('urlQueryEscape', () => {
++  const input = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
++  const expected = '%21%22%23%24%25%26%27%28%29%2A%2B%2C-.%2F%3A%3B%3C%3D%3E%3F%40%5B%5C%5D%5E_%60%7B%7C%7D~';
++  expect(urlQueryEscape(input)).toEqual(expected);
++});
++
+ test('parseIssueHref', () => {
+   expect(parseIssueHref('/owner/repo/issues/1')).toEqual({ownerName: 'owner', repoName: 'repo', pathType: 'issues', indexString: '1'});
+   expect(parseIssueHref('/owner/repo/pulls/1?query')).toEqual({ownerName: 'owner', repoName: 'repo', pathType: 'pulls', indexString: '1'});
+diff --git a/web_src/js/utils.ts b/web_src/js/utils.ts
+index afe8c8f4728a3..6a31e767bbfe8 100644
+--- a/web_src/js/utils.ts
++++ b/web_src/js/utils.ts
+@@ -43,6 +43,15 @@ export function stripTags(text: string): string {
+   return text;
+ }
+ 
++export function urlQueryEscape(s: string) {
++  // See "TestQueryEscape" in backend
++  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURIComponent#encoding_for_rfc3986
++  return encodeURIComponent(s).replace(
++    /[!'()*]/g,
++    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
++  );
++}
++
+ export function parseIssueHref(href: string): IssuePathInfo {
+   // FIXME: it should use pathname and trim the appSubUrl ahead
+   const path = (href || '').replace(/[#?].*$/, '');
+
+From 3654cb8187276b6c860ad575baa2ee6b6959df09 Mon Sep 17 00:00:00 2001
+From: wxiaoguang <wxiaoguang@gmail.com>
+Date: Sat, 24 Jan 2026 15:46:19 +0800
+Subject: [PATCH 2/4] fix comment
+
+---
+ web_src/css/base.css | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/web_src/css/base.css b/web_src/css/base.css
+index 39aa72eea8baa..0858ddc041fa1 100644
+--- a/web_src/css/base.css
++++ b/web_src/css/base.css
+@@ -103,9 +103,9 @@ samp,
+   font-size: 0.95em; /* compensate for monospace fonts being usually slightly larger */
+ }
+ 
+-/* there are many <code> blocks in non-markup(.markup code) / non-code-diff(code.code-inner) containers (for example: translation strings, etc),
+-so we need to make <code> have default global styles, ".markup code" has its own styles and doesn't conflict, but `.code-inner` is special.
+-TODO: in the future, we should use `div` instead of `code` for `.code-inner` because it is a container for highlighted code line */
++/* there are many <code> blocks in non-markup(.markup code) / non-code-diff(code.code-inner) containers, for example: translation strings, etc,
++so we need to make <code> have default global styles, ".markup code" has its own styles and these styles sometimes conflict.
++TODO: in the future, we should use `div` instead of `code` for `.code-inner` because it is a container for highlighted code line, then drop this ":not" patch */
+ code:not(.code-inner) {
+   padding: 1px 4px;
+   border-radius: var(--border-radius);
+
+From b6737152003007e65ae1c6e4343d58d199400593 Mon Sep 17 00:00:00 2001
+From: wxiaoguang <wxiaoguang@gmail.com>
+Date: Sat, 24 Jan 2026 15:53:36 +0800
+Subject: [PATCH 3/4] use :where
+
+---
+ web_src/css/base.css | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/web_src/css/base.css b/web_src/css/base.css
+index 0858ddc041fa1..4dc19d9a5b072 100644
+--- a/web_src/css/base.css
++++ b/web_src/css/base.css
+@@ -106,7 +106,7 @@ samp,
+ /* there are many <code> blocks in non-markup(.markup code) / non-code-diff(code.code-inner) containers, for example: translation strings, etc,
+ so we need to make <code> have default global styles, ".markup code" has its own styles and these styles sometimes conflict.
+ TODO: in the future, we should use `div` instead of `code` for `.code-inner` because it is a container for highlighted code line, then drop this ":not" patch */
+-code:not(.code-inner) {
++code:where(:not(.code-inner)) {
+   padding: 1px 4px;
+   border-radius: var(--border-radius);
+   background-color: var(--color-markup-code-inline);
+
+From 6d87c381ec69df5de028d1225b75fba285ce5526 Mon Sep 17 00:00:00 2001
+From: wxiaoguang <wxiaoguang@gmail.com>
+Date: Sat, 24 Jan 2026 15:58:45 +0800
+Subject: [PATCH 4/4] Update options/locale/locale_en-US.json
+
+Co-authored-by: silverwind <me@silverwind.io>
+Signed-off-by: wxiaoguang <wxiaoguang@gmail.com>
+---
+ options/locale/locale_en-US.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/options/locale/locale_en-US.json b/options/locale/locale_en-US.json
+index b9329a921287b..f43539f1732f3 100644
+--- a/options/locale/locale_en-US.json
++++ b/options/locale/locale_en-US.json
+@@ -1490,7 +1490,7 @@
+   "repo.issues.filter_sort.feweststars": "Fewest stars",
+   "repo.issues.filter_sort.mostforks": "Most forks",
+   "repo.issues.filter_sort.fewestforks": "Fewest forks",
+-  "repo.issues.quick_goto": "Goto issue",
++  "repo.issues.quick_goto": "Go to issue",
+   "repo.issues.action_open": "Open",
+   "repo.issues.action_close": "Close",
+   "repo.issues.action_label": "Label",

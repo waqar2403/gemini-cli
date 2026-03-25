@@ -1,0 +1,518 @@
+From aaed1b315352f41f7d83e943f936a32af18595e0 Mon Sep 17 00:00:00 2001
+From: meganrogge <merogge@microsoft.com>
+Date: Mon, 23 Mar 2026 16:21:10 -0400
+Subject: [PATCH] Cherry-pick fix/303174-separate-revert to release/1.113
+ (squashed)
+
+---
+ .../input/permissionPickerActionItem.ts       |  2 +-
+ .../browser/runInTerminalToolTelemetry.ts     |  2 +-
+ .../commandLineAnalyzer.ts                    |  9 --
+ .../commandLineAutoApproveAnalyzer.ts         | 65 +++++++-------
+ .../browser/tools/runInTerminalTool.ts        | 57 ++----------
+ .../commandLineAutoApproveAnalyzer.test.ts    | 77 ++++++++++++++++
+ .../runInTerminalTool.test.ts                 | 89 +++++++++----------
+ 7 files changed, 162 insertions(+), 139 deletions(-)
+ create mode 100644 src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/commandLineAutoApproveAnalyzer.test.ts
+
+diff --git a/src/vs/workbench/contrib/chat/browser/widget/input/permissionPickerActionItem.ts b/src/vs/workbench/contrib/chat/browser/widget/input/permissionPickerActionItem.ts
+index 461611150227e..de073f198024b 100644
+--- a/src/vs/workbench/contrib/chat/browser/widget/input/permissionPickerActionItem.ts
++++ b/src/vs/workbench/contrib/chat/browser/widget/input/permissionPickerActionItem.ts
+@@ -164,7 +164,7 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
+ 									custom: {
+ 										icon: Codicon.rocket,
+ 										markdownDetails: [{
+-											markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Autopilot will auto-approve all tool calls and continue working autonomously until the task is complete. The agent will make decisions on your behalf without asking for confirmation.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
++											markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Autopilot will auto-approve all tool calls and continue working autonomously until the task is complete. This includes terminal commands, file edits, and external tool calls. The agent will make decisions on your behalf without asking for confirmation.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
+ 										}],
+ 									},
+ 								});
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/runInTerminalToolTelemetry.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/runInTerminalToolTelemetry.ts
+index 260165d655600..047c59fab3975 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/runInTerminalToolTelemetry.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/runInTerminalToolTelemetry.ts
+@@ -19,7 +19,7 @@ export class RunInTerminalToolTelemetry {
+ 		subCommands: string[];
+ 		autoApproveAllowed: 'allowed' | 'needsOptIn' | 'off';
+ 		autoApproveResult: 'approved' | 'denied' | 'manual';
+-		autoApproveReason: 'subCommand' | 'commandLine' | 'session' | undefined;
++		autoApproveReason: 'subCommand' | 'commandLine' | undefined;
+ 		autoApproveDefault: boolean | undefined;
+ 	}) {
+ 		const subCommandsSanitized = state.subCommands.map(e => {
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAnalyzer.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAnalyzer.ts
+index b4fab0650d3d8..317ff1489880f 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAnalyzer.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAnalyzer.ts
+@@ -66,13 +66,4 @@ export interface ICommandLineAnalyzerResult {
+ 	readonly customActions?: ToolConfirmationAction[];
+ 	// Indicates that auto approval should be forced (e.g. sandboxed commands).
+ 	readonly forceAutoApproval?: boolean;
+-	/**
+-	 * Optional denial details when this analyzer explicitly denied auto-execution.
+-	 */
+-	readonly denialDetails?: {
+-		readonly scope: 'subCommand' | 'commandLine';
+-		readonly deniedCommand: string;
+-		readonly reason: string;
+-		readonly ruleSourceText?: string;
+-	};
+ }
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAutoApproveAnalyzer.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAutoApproveAnalyzer.ts
+index 03818e588b2fa..cff1b32e22ead 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAutoApproveAnalyzer.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/commandLineAnalyzer/commandLineAutoApproveAnalyzer.ts
+@@ -51,9 +51,21 @@ export class CommandLineAutoApproveAnalyzer extends Disposable implements IComma
+ 	}
+ 
+ 	async analyze(options: ICommandLineAnalyzerOptions): Promise<ICommandLineAnalyzerResult> {
+-		const hasSessionAutoApproval = options.chatSessionResource && this._terminalChatService.hasChatSessionAutoApproval(options.chatSessionResource);
+-		if (hasSessionAutoApproval) {
+-			this._log('Session has auto approval enabled');
++		const isAutoApproveEnabledInSettings = this._configurationService.getValue<boolean>(TerminalChatAgentToolsSettingId.EnableAutoApprove) === true;
++		if (isAutoApproveEnabledInSettings && options.chatSessionResource && this._terminalChatService.hasChatSessionAutoApproval(options.chatSessionResource)) {
++			this._log('Session has auto approval enabled, auto approving command');
++			const disableUri = createCommandUri(TerminalChatCommandId.DisableSessionAutoApproval, options.chatSessionResource);
++			const mdTrustSettings = {
++				isTrusted: {
++					enabledCommands: [TerminalChatCommandId.DisableSessionAutoApproval]
++				}
++			};
++			return {
++				isAutoApproved: true,
++				isAutoApproveAllowed: true,
++				disclaimers: [],
++				autoApproveInfo: new MarkdownString(`${localize('autoApprove.session', 'Auto approved for this session')} ([${localize('autoApprove.session.disable', 'Disable')}](${disableUri.toString()}))`, mdTrustSettings),
++			};
+ 		}
+ 
+ 		const trimmedCommandLine = options.commandLine.trimStart();
+@@ -71,7 +83,17 @@ export class CommandLineAutoApproveAnalyzer extends Disposable implements IComma
+ 		let autoApproveInfo: IMarkdownString | undefined;
+ 		let customActions: ToolConfirmationAction[] | undefined;
+ 
+-		if (!subCommands) {
++		if (!subCommands?.length) {
++			if (trimmedCommandLine.length === 0) {
++				this._log('Command line is empty, auto approving');
++				return {
++					isAutoApproved: true,
++					isAutoApproveAllowed: true,
++					disclaimers: [],
++				};
++			}
++
++			this._log('No sub-commands were parsed, auto approval is not allowed');
+ 			return {
+ 				isAutoApproveAllowed: false,
+ 				disclaimers: [],
+@@ -86,44 +108,26 @@ export class CommandLineAutoApproveAnalyzer extends Disposable implements IComma
+ 		];
+ 
+ 		let isDenied = false;
+-		let autoApproveReason: 'subCommand' | 'commandLine' | 'session' | undefined;
++		let autoApproveReason: 'subCommand' | 'commandLine' | undefined;
+ 		let autoApproveDefault: boolean | undefined;
+-		let denialDetails: ICommandLineAnalyzerResult['denialDetails'];
+ 
+-		const deniedSubCommandResultIndex = subCommandResults.findIndex(e => e.result === 'denied');
+-		const deniedSubCommandResult = deniedSubCommandResultIndex !== -1 ? subCommandResults[deniedSubCommandResultIndex] : undefined;
++		const deniedSubCommandResult = subCommandResults.find(e => e.result === 'denied');
+ 		if (deniedSubCommandResult) {
+ 			this._log('Sub-command DENIED auto approval');
+ 			isDenied = true;
+ 			autoApproveDefault = isAutoApproveRule(deniedSubCommandResult.rule) ? deniedSubCommandResult.rule.isDefaultRule : undefined;
+ 			autoApproveReason = 'subCommand';
+-			denialDetails = {
+-				scope: 'subCommand',
+-				deniedCommand: subCommands[deniedSubCommandResultIndex] ?? trimmedCommandLine,
+-				reason: deniedSubCommandResult.reason,
+-				ruleSourceText: isAutoApproveRule(deniedSubCommandResult.rule) ? deniedSubCommandResult.rule.sourceText : undefined,
+-			};
+ 		} else if (commandLineResult.result === 'denied') {
+ 			this._log('Command line DENIED auto approval');
+ 			isDenied = true;
+ 			autoApproveDefault = isAutoApproveRule(commandLineResult.rule) ? commandLineResult.rule.isDefaultRule : undefined;
+ 			autoApproveReason = 'commandLine';
+-			denialDetails = {
+-				scope: 'commandLine',
+-				deniedCommand: trimmedCommandLine,
+-				reason: commandLineResult.reason,
+-				ruleSourceText: isAutoApproveRule(commandLineResult.rule) ? commandLineResult.rule.sourceText : undefined,
+-			};
+ 		} else {
+ 			if (subCommandResults.every(e => e.result === 'approved')) {
+ 				this._log('All sub-commands auto-approved');
+ 				isAutoApproved = true;
+ 				autoApproveReason = 'subCommand';
+ 				autoApproveDefault = subCommandResults.every(e => isAutoApproveRule(e.rule) && e.rule.isDefaultRule);
+-			} else if (hasSessionAutoApproval) {
+-				this._log('Session auto approval - approving non-denied command');
+-				isAutoApproved = true;
+-				autoApproveReason = 'session';
+ 			} else {
+ 				this._log('All sub-commands NOT auto-approved');
+ 				if (commandLineResult.result === 'approved') {
+@@ -145,15 +149,7 @@ export class CommandLineAutoApproveAnalyzer extends Disposable implements IComma
+ 		// Apply auto approval or force it off depending on enablement/opt-in state
+ 		const isAutoApproveEnabled = this._configurationService.getValue(TerminalChatAgentToolsSettingId.EnableAutoApprove) === true;
+ 		const isAutoApproveWarningAccepted = this._storageService.getBoolean(TerminalToolConfirmationStorageKeys.TerminalAutoApproveWarningAccepted, StorageScope.APPLICATION, false);
+-		if (hasSessionAutoApproval && isAutoApproved) {
+-			const disableUri = createCommandUri(TerminalChatCommandId.DisableSessionAutoApproval, options.chatSessionResource!);
+-			const mdTrustSettings = {
+-				isTrusted: {
+-					enabledCommands: [TerminalChatCommandId.DisableSessionAutoApproval]
+-				}
+-			};
+-			autoApproveInfo = new MarkdownString(`${localize('autoApprove.session', 'Auto approved for this session')} ([${localize('autoApprove.session.disable', 'Disable')}](${disableUri.toString()}))`, mdTrustSettings);
+-		} else if (isAutoApproveEnabled && isAutoApproved) {
++		if (isAutoApproveEnabled && isAutoApproved) {
+ 			autoApproveInfo = this._createAutoApproveInfo(
+ 				isAutoApproved,
+ 				isDenied,
+@@ -210,14 +206,13 @@ export class CommandLineAutoApproveAnalyzer extends Disposable implements IComma
+ 			disclaimers,
+ 			autoApproveInfo,
+ 			customActions,
+-			denialDetails,
+ 		};
+ 	}
+ 
+ 	private _createAutoApproveInfo(
+ 		isAutoApproved: boolean,
+ 		isDenied: boolean,
+-		autoApproveReason: 'subCommand' | 'commandLine' | 'session' | undefined,
++		autoApproveReason: 'subCommand' | 'commandLine' | undefined,
+ 		subCommandResults: ICommandApprovalResultWithReason[],
+ 		commandLineResult: ICommandApprovalResultWithReason,
+ 	): IMarkdownString | undefined {
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+index 4d54022acb7c5..4739f7e27c916 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/runInTerminalTool.ts
+@@ -47,7 +47,7 @@ import { SandboxedCommandLinePresenter } from './commandLinePresenter/sandboxedC
+ import { RunInTerminalToolTelemetry } from '../runInTerminalToolTelemetry.js';
+ import { ShellIntegrationQuality, ToolTerminalCreator, type IToolTerminal } from '../toolTerminalCreator.js';
+ import { TreeSitterCommandParser, TreeSitterCommandParserLanguage } from '../treeSitterCommandParser.js';
+-import { type ICommandLineAnalyzer, type ICommandLineAnalyzerOptions, type ICommandLineAnalyzerResult } from './commandLineAnalyzer/commandLineAnalyzer.js';
++import { type ICommandLineAnalyzer, type ICommandLineAnalyzerOptions } from './commandLineAnalyzer/commandLineAnalyzer.js';
+ import { CommandLineAutoApproveAnalyzer } from './commandLineAnalyzer/commandLineAutoApproveAnalyzer.js';
+ import { CommandLineFileWriteAnalyzer } from './commandLineAnalyzer/commandLineFileWriteAnalyzer.js';
+ import { CommandLineSandboxAnalyzer } from './commandLineAnalyzer/commandLineSandboxAnalyzer.js';
+@@ -375,8 +375,6 @@ const telemetryIgnoredSequences = [
+ ];
+ 
+ const altBufferMessage = '\n' + localize('runInTerminalTool.altBufferMessage', "The command opened the alternate buffer.");
+-const deniedCommandCircuitBreakerThreshold = 3;
+-type DenialDetails = NonNullable<ICommandLineAnalyzerResult['denialDetails']>;
+ 
+ 
+ export class RunInTerminalTool extends Disposable implements IToolImpl {
+@@ -395,7 +393,6 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 
+ 	protected readonly _sessionTerminalAssociations = new ResourceMap<IToolTerminal>();
+ 	protected readonly _sessionTerminalInstances = new ResourceMap<Set<ITerminalInstance>>();
+-	private readonly _sessionDeniedCommandCounts = new ResourceMap<Map<string, number>>();
+ 	private readonly _terminalsBeingDisposedBySessionCleanup = new Set<ITerminalInstance>();
+ 
+ 	// Immutable window state
+@@ -650,7 +647,14 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 			chatSessionResource,
+ 			requiresUnsandboxConfirmation,
+ 		};
+-		const commandLineAnalyzerResults = await Promise.all(this._commandLineAnalyzers.map(e => e.analyze(commandLineAnalyzerOptions)));
++
++		// In Autopilot/Bypass Approvals modes, do not interact with terminal auto-approve rules.
++		// Commands should flow through directly based on the chat permission level.
++		const isSessionAutoApproved = chatSessionResource && this._isSessionAutoApproveLevel(chatSessionResource);
++		const commandLineAnalyzers = isSessionAutoApproved
++			? this._commandLineAnalyzers.filter(e => !(e instanceof CommandLineAutoApproveAnalyzer))
++			: this._commandLineAnalyzers;
++		const commandLineAnalyzerResults = await Promise.all(commandLineAnalyzers.map(e => e.analyze(commandLineAnalyzerOptions)));
+ 
+ 		const disclaimersRaw = commandLineAnalyzerResults.map(e => e.disclaimers).filter(e => !!e).flatMap(e => e);
+ 		let disclaimer: IMarkdownString | undefined;
+@@ -764,32 +768,6 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 				: localize('runInTerminal.unsandboxed', "Run `{0}` command outside the sandbox?", shellType);
+ 		}
+ 
+-		// Check if the session's permission level (Autopilot/Bypass Approvals) auto-approves all tools.
+-		// When active, skip terminal confirmation entirely since the user has opted into full auto-approval.
+-		const isSessionAutoApproved = chatSessionResource && this._isSessionAutoApproveLevel(chatSessionResource);
+-		const deniedAnalyzerResult = commandLineAnalyzerResults.find(e => e.isAutoApproved === false && e.denialDetails);
+-
+-		// In auto-approval session mode, fail closed for policy-denied commands instead of showing
+-		// a confirmation that may block unattended runs.
+-		if (isSessionAutoApproved && deniedAnalyzerResult?.denialDetails && context.forceConfirmationReason === undefined) {
+-			const denial = deniedAnalyzerResult.denialDetails;
+-			const deniedRule = denial.ruleSourceText
+-				? ` Rule: \`${escapeMarkdownSyntaxTokens(denial.ruleSourceText)}\`.`
+-				: '';
+-			const deniedAttempts = this._recordDeniedCommandAttempt(chatSessionResource!, denial);
+-			const shouldCircuitBreak = deniedAttempts >= deniedCommandCircuitBreakerThreshold;
+-			toolSpecificData.alternativeRecommendation = shouldCircuitBreak
+-				? `POLICY_DENIED_CIRCUIT_BREAKER: Command was blocked ${deniedAttempts} times in this session and will not be retried. Scope: ${denial.scope}. Command: \`${escapeMarkdownSyntaxTokens(denial.deniedCommand)}\`. Reason: ${denial.reason}.${deniedRule}`
+-				: `POLICY_DENIED: Command was not executed in auto-approval session mode. Scope: ${denial.scope}. Command: \`${escapeMarkdownSyntaxTokens(denial.deniedCommand)}\`. Reason: ${denial.reason}.${deniedRule}`;
+-			return {
+-				confirmationMessages: undefined,
+-				toolSpecificData,
+-			};
+-		}
+-		if (isSessionAutoApproved && chatSessionResource) {
+-			this._sessionDeniedCommandCounts.delete(chatSessionResource);
+-		}
+-
+ 		// If forceConfirmationReason is set, always show confirmation regardless of auto-approval
+ 		const shouldShowConfirmation = (!isFinalAutoApproved && !isSessionAutoApproved) || context.forceConfirmationReason !== undefined;
+ 		const confirmationMessage = requiresUnsandboxConfirmation
+@@ -840,10 +818,6 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 		if (inspected.policyValue === false) {
+ 			return false;
+ 		}
+-		// Check the terminal chat service's session auto-approval state
+-		if (this._terminalChatService.hasChatSessionAutoApproval(chatSessionResource)) {
+-			return true;
+-		}
+ 		// Check the live widget picker level (handles mid-session switches).
+ 		// Fall back to lastFocusedWidget if the session-specific widget isn't found
+ 		// (e.g., widget was backgrounded or URI mismatch).
+@@ -1525,7 +1499,6 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 
+ 		this._sessionTerminalAssociations.delete(chatSessionResource);
+ 		this._sessionTerminalInstances.delete(chatSessionResource);
+-		this._sessionDeniedCommandCounts.delete(chatSessionResource);
+ 
+ 		for (const terminal of terminalsToDispose) {
+ 			// Skip redundant map walks in onDidDispose since this session has already been removed.
+@@ -1546,18 +1519,6 @@ export class RunInTerminalTool extends Disposable implements IToolImpl {
+ 		}
+ 	}
+ 
+-	private _recordDeniedCommandAttempt(chatSessionResource: URI, denial: DenialDetails): number {
+-		let sessionCounts = this._sessionDeniedCommandCounts.get(chatSessionResource);
+-		if (!sessionCounts) {
+-			sessionCounts = new Map<string, number>();
+-			this._sessionDeniedCommandCounts.set(chatSessionResource, sessionCounts);
+-		}
+-		const signature = JSON.stringify([denial.scope, denial.deniedCommand, denial.ruleSourceText ?? denial.reason]);
+-		const attempts = (sessionCounts.get(signature) ?? 0) + 1;
+-		sessionCounts.set(signature, attempts);
+-		return attempts;
+-	}
+-
+ 	private _addSessionTerminalAssociation(chatSessionResource: URI, toolTerminal: IToolTerminal): void {
+ 		this._ensureArchivedSessionListener();
+ 
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/commandLineAutoApproveAnalyzer.test.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/commandLineAutoApproveAnalyzer.test.ts
+new file mode 100644
+index 0000000000000..1959af5087982
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/commandLineAutoApproveAnalyzer.test.ts
+@@ -0,0 +1,77 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import { strictEqual } from 'assert';
++import { OperatingSystem } from '../../../../../../base/common/platform.js';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
++import type { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
++import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
++import { workbenchInstantiationService } from '../../../../../test/browser/workbenchTestServices.js';
++import type { ICommandLineAnalyzerOptions } from '../../browser/tools/commandLineAnalyzer/commandLineAnalyzer.js';
++import { CommandLineAutoApproveAnalyzer } from '../../browser/tools/commandLineAnalyzer/commandLineAutoApproveAnalyzer.js';
++import { RunInTerminalToolTelemetry } from '../../browser/runInTerminalToolTelemetry.js';
++import { TreeSitterCommandParser, TreeSitterCommandParserLanguage } from '../../browser/treeSitterCommandParser.js';
++
++suite('CommandLineAutoApproveAnalyzer', () => {
++	const store = ensureNoDisposablesAreLeakedInTestSuite();
++
++	let instantiationService: IInstantiationService;
++	let analyzer: CommandLineAutoApproveAnalyzer;
++
++	setup(() => {
++		const configurationService = new TestConfigurationService();
++		instantiationService = workbenchInstantiationService({
++			configurationService: () => configurationService
++		}, store);
++
++		const parser = {
++			extractSubCommands: async () => [],
++		} as unknown as TreeSitterCommandParser;
++		const telemetry = {
++			logPrepare: () => { },
++		} as unknown as RunInTerminalToolTelemetry;
++
++		analyzer = store.add(instantiationService.createInstance(
++			CommandLineAutoApproveAnalyzer,
++			parser,
++			telemetry,
++			() => { }
++		));
++	});
++
++	test('should not allow auto approve when sub-command parsing returns an empty list', async () => {
++		const options: ICommandLineAnalyzerOptions = {
++			commandLine: 'rm -- file.txt',
++			cwd: undefined,
++			shell: 'pwsh',
++			os: OperatingSystem.Windows,
++			treeSitterLanguage: TreeSitterCommandParserLanguage.PowerShell,
++			terminalToolSessionId: 'test',
++			chatSessionResource: undefined,
++		};
++
++		const result = await analyzer.analyze(options);
++		strictEqual(result.isAutoApproveAllowed, false);
++		strictEqual(result.isAutoApproved, undefined);
++		strictEqual(result.disclaimers?.length ?? 0, 0);
++	});
++
++	test('should auto approve empty command strings when sub-command parsing returns an empty list', async () => {
++		const options: ICommandLineAnalyzerOptions = {
++			commandLine: '   ',
++			cwd: undefined,
++			shell: 'pwsh',
++			os: OperatingSystem.Windows,
++			treeSitterLanguage: TreeSitterCommandParserLanguage.PowerShell,
++			terminalToolSessionId: 'test',
++			chatSessionResource: undefined,
++		};
++
++		const result = await analyzer.analyze(options);
++		strictEqual(result.isAutoApproveAllowed, true);
++		strictEqual(result.isAutoApproved, true);
++		strictEqual(result.disclaimers?.length ?? 0, 0);
++	});
++});
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
+index 7b3f39ad07462..6aab2ceb354bb 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
+@@ -31,6 +31,8 @@ import { TestContextService } from '../../../../../test/common/workbenchTestServ
+ import { TestIPCFileSystemProvider } from '../../../../../test/electron-browser/workbenchTestServices.js';
+ import { TerminalToolConfirmationStorageKeys } from '../../../../chat/browser/widget/chatContentParts/toolInvocationParts/chatTerminalToolConfirmationSubPart.js';
+ import { IChatService, type IChatTerminalToolInvocationData } from '../../../../chat/common/chatService/chatService.js';
++import { IChatWidgetService } from '../../../../chat/browser/chat.js';
++import { ChatPermissionLevel } from '../../../../chat/common/constants.js';
+ import { LocalChatSessionUri } from '../../../../chat/common/model/chatUri.js';
+ import { ITerminalSandboxService } from '../../common/terminalSandboxService.js';
+ import { ILanguageModelToolsService, IPreparedToolInvocation, IToolData, IToolImpl, IToolInvocationPreparationContext, ToolDataSource, ToolSet, type ToolConfirmationAction } from '../../../../chat/common/tools/languageModelToolsService.js';
+@@ -1551,11 +1553,7 @@ suite('RunInTerminalTool', () => {
+ 	});
+ 
+ 	suite('session auto approval', () => {
+-		setup(() => {
+-			setAutoApprove({ rm: false });
+-		});
+-
+-		test('should return policy denial details for denied commands when session has auto approval enabled', async () => {
++		test('should auto approve all commands when session has auto approval enabled', async () => {
+ 			const sessionId = 'test-session-123';
+ 			const sessionResource = LocalChatSessionUri.forSession(sessionId);
+ 			const terminalChatService = instantiationService.get(ITerminalChatService);
+@@ -1579,61 +1577,62 @@ suite('RunInTerminalTool', () => {
+ 			assertAutoApproved(result);
+ 
+ 			const terminalData = result!.toolSpecificData as IChatTerminalToolInvocationData;
+-			ok(terminalData.alternativeRecommendation, 'Expected policy denial alternative recommendation');
+-			ok(terminalData.alternativeRecommendation.includes('POLICY_DENIED'), 'Expected policy denial marker');
+-			ok(terminalData.alternativeRecommendation.includes('rm dangerous-file.txt'), 'Expected denied command details');
++			ok(terminalData.autoApproveInfo, 'Expected autoApproveInfo to be defined');
++			ok(terminalData.autoApproveInfo.value.includes('Auto approved for this session'), 'Expected session approval message');
+ 		});
+ 
+-		test('should still show confirmation when forceConfirmationReason is provided', async () => {
+-			const sessionId = 'test-session-123-force';
+-			const sessionResource = LocalChatSessionUri.forSession(sessionId);
+-			const terminalChatService = instantiationService.get(ITerminalChatService);
++		test('should bypass terminal auto-approve feature in Autopilot mode', async () => {
++			setAutoApprove({
++				curl: false
++			});
+ 
+-			terminalChatService.setChatSessionAutoApproval(sessionResource, true);
++			const sessionResource = LocalChatSessionUri.forSession('autopilot-session');
++			instantiationService.stub(IChatWidgetService, {
++				getWidgetBySessionResource: (() => ({ input: { currentModeInfo: { permissionLevel: ChatPermissionLevel.Autopilot } } })) as unknown as IChatWidgetService['getWidgetBySessionResource'],
++				lastFocusedWidget: undefined,
++			});
+ 
+-			const context: IToolInvocationPreparationContext = {
++			const autopilotRunInTerminalTool = store.add(instantiationService.createInstance(TestRunInTerminalTool));
++			const result = await autopilotRunInTerminalTool.prepareToolInvocation({
+ 				parameters: {
+-					command: 'rm dangerous-file.txt',
+-					explanation: 'Remove a file',
+-					goal: 'Remove a file',
+-					isBackground: false
++					command: 'curl https://example.com',
++					explanation: 'Fetch a URL',
++					goal: 'Download content',
++					isBackground: false,
+ 				} as IRunInTerminalInputParams,
+ 				chatSessionResource: sessionResource,
+-				forceConfirmationReason: 'test'
+-			} as IToolInvocationPreparationContext;
++			} as IToolInvocationPreparationContext, CancellationToken.None);
+ 
+-			const result = await runInTerminalTool.prepareToolInvocation(context, CancellationToken.None);
+-			assertConfirmationRequired(result);
++			assertAutoApproved(result);
++			const terminalData = result!.toolSpecificData as IChatTerminalToolInvocationData;
++			strictEqual(terminalData.autoApproveInfo, undefined, 'Expected no terminal auto-approve info in Autopilot mode');
+ 		});
+ 
+-		test('should circuit break repeated denied command attempts in auto approval sessions', async () => {
+-			const sessionId = 'test-session-123-circuit-break';
+-			const sessionResource = LocalChatSessionUri.forSession(sessionId);
+-			const terminalChatService = instantiationService.get(ITerminalChatService);
++		test('should bypass terminal auto-approve feature in Bypass Approvals mode', async () => {
++			setAutoApprove({
++				curl: false
++			});
+ 
+-			terminalChatService.setChatSessionAutoApproval(sessionResource, true);
++			const sessionResource = LocalChatSessionUri.forSession('bypass-session');
++			instantiationService.stub(IChatWidgetService, {
++				getWidgetBySessionResource: (() => ({ input: { currentModeInfo: { permissionLevel: ChatPermissionLevel.AutoApprove } } })) as unknown as IChatWidgetService['getWidgetBySessionResource'],
++				lastFocusedWidget: undefined,
++			});
+ 
+-			const context: IToolInvocationPreparationContext = {
++			const bypassRunInTerminalTool = store.add(instantiationService.createInstance(TestRunInTerminalTool));
++			const result = await bypassRunInTerminalTool.prepareToolInvocation({
+ 				parameters: {
+-					command: 'rm dangerous-file.txt',
+-					explanation: 'Remove a file',
+-					goal: 'Remove a file',
+-					isBackground: false
++					command: 'curl https://example.com',
++					explanation: 'Fetch a URL',
++					goal: 'Download content',
++					isBackground: false,
+ 				} as IRunInTerminalInputParams,
+-				chatSessionResource: sessionResource
+-			} as IToolInvocationPreparationContext;
+-
+-			const first = await runInTerminalTool.prepareToolInvocation(context, CancellationToken.None);
+-			const second = await runInTerminalTool.prepareToolInvocation(context, CancellationToken.None);
+-			const third = await runInTerminalTool.prepareToolInvocation(context, CancellationToken.None);
+-
+-			const firstData = first!.toolSpecificData as IChatTerminalToolInvocationData;
+-			const secondData = second!.toolSpecificData as IChatTerminalToolInvocationData;
+-			const thirdData = third!.toolSpecificData as IChatTerminalToolInvocationData;
++				chatSessionResource: sessionResource,
++			} as IToolInvocationPreparationContext, CancellationToken.None);
+ 
+-			ok(firstData.alternativeRecommendation?.includes('POLICY_DENIED'), 'Expected initial policy denial message');
+-			ok(secondData.alternativeRecommendation?.includes('POLICY_DENIED'), 'Expected second policy denial message');
+-			ok(thirdData.alternativeRecommendation?.includes('POLICY_DENIED_CIRCUIT_BREAKER'), 'Expected circuit breaker policy denial message');
++			assertAutoApproved(result);
++			const terminalData = result!.toolSpecificData as IChatTerminalToolInvocationData;
++			strictEqual(terminalData.autoApproveInfo, undefined, 'Expected no terminal auto-approve info in Bypass Approvals mode');
+ 		});
+ 	});
+ 

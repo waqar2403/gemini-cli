@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "instance_id": "keycloak__keycloak-47184",
+  "repo": {
+    "full_name": "keycloak/keycloak",
+    "url": "https://github.com/keycloak/keycloak",
+    "base_commit": "e351d5949bd8772757bb116a4bda42bb627bec68",
+    "primary_language": "Java",
+    "languages": [
+      "Java"
+    ]
+  },
+  "problem": {
+    "statement": "### Description\n\nKeycloak currently supports using JWTs for client authentication (client assertions). However, the client assertion has to be self-signed by the client and can not be issued by a 3rd party.\n\nSupporting client assertions issued by a 3rd party would support federated client authentication. This opens up the door for the following use-cases:\n\n* Enabling clients to authenticate with Keycloak using a Kubernetes Service Account\n* Enabling clients to authenticate with SPIFFE JWT SVIDs\n* Enabling clients to authenticate with Keycloak using credentials associated with a different IdP\n\nA realm admin would first configure a trust relationship (identity provider) between a realm and an 3rd party that can issue client assertion tokens. Once configured clients can be configured to use federated JWT authentication and select the trust relationship (identity provider) and provide the external client id (subject claim value).\n\n### Value Proposition\n\nFederated client authentication opens up the door for authenticating clients without credentials, or reducing the amount of credentials a client needs to handle.\n\n### Goals\n\n* Support [client assertions](https://datatracker.ietf.org/doc/html/rfc7521) issued by 3rd party providers for OpenID Connect clients\n* Support [SPIFFE JWT SVIDs](https://datatracker.ietf.org/doc/draft-schwenkschuster-oauth-spiffe-client-auth/)\n* Support Kubernetes Service Accounts\n\n### Non-Goals\n\n* Support X.509 authentication (SPIFFE X.509 SVIDs, SAML clients, etc.); at some point in the future we may introduce a concept of a certificate authority trust relationship to improve configuration of mTLS authentication for clients\n* Support auto-registration or dynamic registration of clients; this will be a follow-up at a later point\n\n### Discussion\n\n_No response_\n\n### Notes\n\nInstead of adding a different concept of 3rd party trust in a realm this should be based on identity providers. This allows a single trust relationship to provide one or more aspects, as well as central management of trust relationships within a realm.\n\nRequirements for client assertions:\n\n* Must be a JWS signed with the keys from the identity provider\n* `iss` must match identity provider issuer URL; required unless `sub` is a URI including the issuer\n* `sub` claim must match the external subject configured for the client; if a URI (for example `spiffe://trust-domain/workload-id`) and no `iss` claim is present the scheme and authority is used as the `iss` value\n* `aud` claim must be a single value equal to the realm issuer URL\n* `exp` claim required; must be in the future\n* `nbf` claim optional; if present must be in the past\n* `iat` claim optional; if present must be a maximum of 300 seconds in the past\n* `jti` required and must be unique if re-use is not permitted by identity provider; if re-use is permitted `jti` is optional",
+    "source": "issue",
+    "source_url": "https://github.com/keycloak/keycloak/issues/42634",
+    "source_id": 42634
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "common/src/main/java/org/keycloak/common/Profile.java",
+      "docs/documentation/release_notes/topics/26_6_0.adoc",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java"
+    ],
+    "affected_directories": [
+      "common/src/main/java/org/keycloak/common",
+      "docs/documentation/release_notes/topics",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication",
+      "tests/base/src/test/java/org/keycloak/tests/admin/identityprovider",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external"
+    ],
+    "files_changed": 12,
+    "directories_changed": 5,
+    "insertions": 23,
+    "deletions": 44,
+    "test_files_changed": [
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java"
+    ],
+    "source_files_changed": [
+      "common/src/main/java/org/keycloak/common/Profile.java",
+      "docs/documentation/release_notes/topics/26_6_0.adoc"
+    ]
+  },
+  "provenance": {
+    "pr_number": 47184,
+    "pr_url": "https://github.com/keycloak/keycloak/pull/47184",
+    "pr_title": "Promote federated client authentication, including OIDC and Kube to fully supported",
+    "pr_merged_at": "2026-03-17T04:15:13Z",
+    "issue_number": 42634,
+    "issue_url": "https://github.com/keycloak/keycloak/issues/42634",
+    "issue_created_at": "2025-09-16T04:52:26Z",
+    "issue_labels": [
+      "kind/feature",
+      "team/core-clients",
+      "release/26.6.0"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "api-boundary"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 12,
+    "directories_changed": 5,
+    "cross_package": false,
+    "insertions": 23,
+    "deletions": 44,
+    "dependency_depth": 2,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 12.7
+  },
+  "contamination": {
+    "issue_created_at": "2025-09-16T04:52:26Z",
+    "pr_merged_at": "2026-03-17T04:15:13Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "java",
+    "runtime_version": "21",
+    "package_manager": "maven",
+    "install_command": "mvn dependency:resolve",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "mvn test",
+    "fail_to_pass": [
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "common/src/main/java/org/keycloak/common/Profile.java",
+      "docs/documentation/release_notes/topics/26_6_0.adoc",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java"
+    ],
+    "dependency_chain": [
+      "common/src/main/java/org/keycloak/common/Profile.java",
+      "docs/documentation/release_notes/topics/26_6_0.adoc"
+    ],
+    "min_context_tokens": 24000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

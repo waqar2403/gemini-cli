@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "instance_id": "keycloak__keycloak-47012",
+  "repo": {
+    "full_name": "keycloak/keycloak",
+    "url": "https://github.com/keycloak/keycloak",
+    "base_commit": "83b14f925f26d88676a11f77212879bbdac0dcc4",
+    "primary_language": "Java",
+    "languages": [
+      "Java"
+    ]
+  },
+  "problem": {
+    "statement": "### Description\n\nMake it simpler to debug Keycloak or extension code when the code is also invoked by test framework initialisation or other tests.\n\n### Value Proposition\n\nInvoke breakpoints only when needed makes it quicker and easier to debug problems\n\n### Goals\n\n* Support adding conditions on debug breakpoints to only stop if currently running a test, or a specific test \n\n### Non-Goals\n\n* \n\n### Discussion\n\n_No response_\n\n### Notes\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/keycloak/keycloak/issues/47011",
+    "source_id": 47011
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java",
+      "test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java",
+      "test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java",
+      "test-framework/docs/DEBUGGING.md",
+      "test-framework/docs/README.md"
+    ],
+    "affected_directories": [
+      "test-framework/core/src/main/java/org/keycloak/testframework",
+      "test-framework/core/src/test/java/org/keycloak/testframework",
+      "test-framework/docs"
+    ],
+    "files_changed": 5,
+    "directories_changed": 3,
+    "insertions": 132,
+    "deletions": 0,
+    "test_files_changed": [
+      "test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java"
+    ],
+    "source_files_changed": [
+      "test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java",
+      "test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java",
+      "test-framework/docs/DEBUGGING.md",
+      "test-framework/docs/README.md"
+    ]
+  },
+  "provenance": {
+    "pr_number": 47012,
+    "pr_url": "https://github.com/keycloak/keycloak/pull/47012",
+    "pr_title": "Add debug helper utility to the test framework",
+    "pr_merged_at": "2026-03-11T09:29:44Z",
+    "issue_number": 47011,
+    "issue_url": "https://github.com/keycloak/keycloak/issues/47011",
+    "issue_created_at": "2026-03-10T10:21:05Z",
+    "issue_labels": [
+      "kind/feature",
+      "area/test-framework",
+      "release/26.6.0"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 5,
+    "directories_changed": 3,
+    "cross_package": false,
+    "insertions": 132,
+    "deletions": 0,
+    "dependency_depth": 4,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 15.7
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-10T10:21:05Z",
+    "pr_merged_at": "2026-03-11T09:29:44Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "java",
+    "runtime_version": "21",
+    "package_manager": "maven",
+    "install_command": "mvn dependency:resolve",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "mvn test",
+    "fail_to_pass": [
+      "test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java",
+      "test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java",
+      "test-framework/core/src/test/java/org/keycloak/testframework/DebugHelperTest.java",
+      "test-framework/docs/DEBUGGING.md",
+      "test-framework/docs/README.md"
+    ],
+    "dependency_chain": [
+      "test-framework/core/src/main/java/org/keycloak/testframework/DebugHelper.java",
+      "test-framework/core/src/main/java/org/keycloak/testframework/KeycloakIntegrationTestExtension.java",
+      "test-framework/docs/DEBUGGING.md",
+      "test-framework/docs/README.md"
+    ],
+    "min_context_tokens": 10000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

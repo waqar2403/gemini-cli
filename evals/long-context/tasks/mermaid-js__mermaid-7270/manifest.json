@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "instance_id": "mermaid-js__mermaid-7270",
+  "repo": {
+    "full_name": "mermaid-js/mermaid",
+    "url": "https://github.com/mermaid-js/mermaid",
+    "base_commit": "304bdf93877cf580ae09324251cb52b1ada5fe93",
+    "primary_language": "JavaScript",
+    "languages": [
+      "JavaScript",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "**Can we support the verital timeline in mermaid.** \r\n\r\nI need to draw a timeline to show users how ting changed in a timely manner, some thing like below.\r\n\r\nIt does not have to do it exactly the same way. \r\n\r\nAbout implementation, we may not need to recreate the wheels(syntax for the timeline).  Mermaid already supports gantt diagram with different sections. Can we render it in the Top-Down or Bottom-Up layout just like what we have in the flow graph? \r\n\r\nGantt is good, but it would be a mess if we have put many information into a wide time range. A vertical timeline has no such issue. And it would be better if we can show two or more timelines for different objects.  \r\n\r\nJust a thought, it may help us turn the gantt diagrams into a timeline easily. \r\n\r\n![image](https://user-images.githubusercontent.com/5875631/130908814-d541b28e-b0cb-42b2-9ffa-23cccace4699.png)",
+    "source": "issue",
+    "source_url": "https://github.com/mermaid-js/mermaid/issues/2268",
+    "source_id": 2268
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      ".changeset/flat-garlics-do.md",
+      "cypress/integration/rendering/timeline.spec.ts",
+      "demos/timeline.html",
+      "docs/syntax/timeline.md",
+      "packages/mermaid/src/diagrams/timeline/parser/timeline.jison",
+      "packages/mermaid/src/diagrams/timeline/timeline-definition.ts",
+      "packages/mermaid/src/diagrams/timeline/timeline.spec.js",
+      "packages/mermaid/src/diagrams/timeline/timelineDb.js",
+      "packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts",
+      "packages/mermaid/src/docs/syntax/timeline.md"
+    ],
+    "affected_directories": [
+      ".changeset",
+      "cypress/integration/rendering",
+      "demos",
+      "docs/syntax",
+      "packages/mermaid/src/diagrams/timeline",
+      "packages/mermaid/src/diagrams/timeline/parser",
+      "packages/mermaid/src/docs/syntax"
+    ],
+    "files_changed": 10,
+    "directories_changed": 7,
+    "insertions": 510,
+    "deletions": 2,
+    "test_files_changed": [
+      "cypress/integration/rendering/timeline.spec.ts",
+      "packages/mermaid/src/diagrams/timeline/timeline.spec.js"
+    ],
+    "source_files_changed": [
+      ".changeset/flat-garlics-do.md",
+      "demos/timeline.html",
+      "docs/syntax/timeline.md",
+      "packages/mermaid/src/diagrams/timeline/parser/timeline.jison",
+      "packages/mermaid/src/diagrams/timeline/timeline-definition.ts",
+      "packages/mermaid/src/diagrams/timeline/timelineDb.js",
+      "packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts",
+      "packages/mermaid/src/docs/syntax/timeline.md"
+    ]
+  },
+  "provenance": {
+    "pr_number": 7270,
+    "pr_url": "https://github.com/mermaid-js/mermaid/pull/7270",
+    "pr_title": "feature/2268: Add vertical timeline variation",
+    "pr_merged_at": "2026-03-13T21:33:42Z",
+    "issue_number": 2268,
+    "issue_url": "https://github.com/mermaid-js/mermaid/issues/2268",
+    "issue_created_at": "2021-08-26T06:12:18Z",
+    "issue_labels": [
+      "Type: Enhancement",
+      "Contributor needed",
+      "Status: Approved",
+      "Good first issue!",
+      "Area: Development",
+      "Graph: Timeline"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 10,
+    "directories_changed": 7,
+    "cross_package": false,
+    "insertions": 510,
+    "deletions": 2,
+    "dependency_depth": 8,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 56.2
+  },
+  "contamination": {
+    "issue_created_at": "2021-08-26T06:12:18Z",
+    "pr_merged_at": "2026-03-13T21:33:42Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "cypress/integration/rendering/timeline.spec.ts",
+      "packages/mermaid/src/diagrams/timeline/timeline.spec.js"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      ".changeset/flat-garlics-do.md",
+      "cypress/integration/rendering/timeline.spec.ts",
+      "demos/timeline.html",
+      "docs/syntax/timeline.md",
+      "packages/mermaid/src/diagrams/timeline/parser/timeline.jison",
+      "packages/mermaid/src/diagrams/timeline/timeline-definition.ts",
+      "packages/mermaid/src/diagrams/timeline/timeline.spec.js",
+      "packages/mermaid/src/diagrams/timeline/timelineDb.js",
+      "packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts",
+      "packages/mermaid/src/docs/syntax/timeline.md"
+    ],
+    "dependency_chain": [
+      ".changeset/flat-garlics-do.md",
+      "demos/timeline.html",
+      "docs/syntax/timeline.md",
+      "packages/mermaid/src/diagrams/timeline/parser/timeline.jison",
+      "packages/mermaid/src/diagrams/timeline/timeline-definition.ts",
+      "packages/mermaid/src/diagrams/timeline/timelineDb.js",
+      "packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts",
+      "packages/mermaid/src/docs/syntax/timeline.md"
+    ],
+    "min_context_tokens": 20000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

@@ -1,0 +1,711 @@
+From 9489e43cf68fb4df5c758e1c9f7019963033da2d Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 6 Mar 2026 12:51:56 +0100
+Subject: [PATCH 1/7] chore: update .gitignore to include
+ architecture-randomize.html in demos/dev
+
+---
+ .gitignore | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/.gitignore b/.gitignore
+index 2fbf4672ba6..533655b230f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -52,6 +52,7 @@ stats/
+ demos/dev/**
+ !/demos/dev/example.html
+ !/demos/dev/reload.js
++!/demos/dev/architecture-randomize.html
+ tsx-0/**
+ vite.config.ts.timestamp-*
+ 
+
+From 808941aa2b1bd85c6ec98d2695820c0850c38615 Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 6 Mar 2026 12:52:44 +0100
+Subject: [PATCH 2/7] feat(architecture): enable architecture diagram tests and
+ add randomization demo
+
+- Re-enabled tests for architecture diagrams, ensuring deterministic layouts.
+- Added a new test for complex deeply-nested diagrams.
+- Introduced a new HTML demo for testing architecture randomization configurations.
+---
+ .../rendering/architecture.spec.ts            | 46 ++++++++-
+ demos/dev/architecture-randomize.html         | 97 +++++++++++++++++++
+ .../architecture/architecture.spec.ts         | 50 ++++++++++
+ 3 files changed, 190 insertions(+), 3 deletions(-)
+ create mode 100644 demos/dev/architecture-randomize.html
+
+diff --git a/cypress/integration/rendering/architecture.spec.ts b/cypress/integration/rendering/architecture.spec.ts
+index 7c9c5a9d24a..0ac1d60ed71 100644
+--- a/cypress/integration/rendering/architecture.spec.ts
++++ b/cypress/integration/rendering/architecture.spec.ts
+@@ -1,6 +1,6 @@
+ import { imgSnapshotTest, urlSnapshotTest } from '../../helpers/util.ts';
+ 
+-describe.skip('architecture diagram', () => {
++describe('architecture diagram', () => {
+   it('should render a simple architecture diagram with groups', () => {
+     imgSnapshotTest(
+       `architecture-beta
+@@ -242,6 +242,47 @@ describe.skip('architecture diagram', () => {
+       `
+     );
+   });
++  it('should render a deterministic layout for a complex deeply-nested diagram', () => {
++    imgSnapshotTest(
++      `architecture-beta
++                group sub1(cloud)[Subscription A]
++                group vnet1(cloud)[VNet A] in sub1
++                service vm1(server)[VM] in vnet1
++
++                group sub2(cloud)[Subscription B]
++                group shared(cloud)[Shared] in sub2
++                service reg(database)[Registry] in shared
++
++                group env(cloud)[Environment] in sub2
++                group vnet(cloud)[VNet] in env
++                group snet1(cloud)[App Subnet] in vnet
++                service nsg(server)[NSG] in snet1
++                service asp(server)[App Plan] in snet1
++                service web(server)[Web App] in snet1
++
++                group snet2(cloud)[PE Subnet] in vnet
++                service pe1(server)[PE Blob] in snet2
++                service pe2(server)[PE Bus] in snet2
++
++                service storage(disk)[Storage] in env
++                service container(disk)[Container] in env
++                service bus(server)[Service Bus] in env
++                service dns(server)[DNS Zone] in env
++
++                service client(internet)[Client]
++
++                reg:B --> T:web
++                nsg:R --> L:asp
++                asp:R --> L:web
++                web:R --> L:pe1
++                pe1:R --> L:storage
++                storage:B --> T:container
++                web:B --> T:pe2
++                pe2:R --> L:bus
++                vm1:R --> L:pe2
++            `
++    );
++  });
+   it('should render edges at correct length', () => {
+     imgSnapshotTest(`
+       architecture-beta
+@@ -254,8 +295,7 @@ describe.skip('architecture diagram', () => {
+   });
+ });
+ 
+-// Skipped as the layout is not deterministic, and causes issues in E2E tests.
+-describe.skip('architecture - external', () => {
++describe('architecture - external', () => {
+   it('should allow adding external icons', () => {
+     urlSnapshotTest('/architecture-external.html');
+   });
+diff --git a/demos/dev/architecture-randomize.html b/demos/dev/architecture-randomize.html
+new file mode 100644
+index 00000000000..c908a499e99
+--- /dev/null
++++ b/demos/dev/architecture-randomize.html
+@@ -0,0 +1,97 @@
++<html>
++  <head>
++    <title>Architecture randomize test</title>
++  </head>
++  <body>
++    <h3>Default (randomize: false) &mdash; reload should produce identical layout</h3>
++    <pre class="mermaid">
++architecture-beta
++    group sub1(cloud)[Subscription A]
++    group vnet1(cloud)[VNet A] in sub1
++    service vm1(server)[VM] in vnet1
++
++    group sub2(cloud)[Subscription B]
++    group shared(cloud)[Shared] in sub2
++    service reg(database)[Registry] in shared
++
++    group env(cloud)[Environment] in sub2
++    group vnet(cloud)[VNet] in env
++    group snet1(cloud)[App Subnet] in vnet
++    service nsg(server)[NSG] in snet1
++    service asp(server)[App Plan] in snet1
++    service web(server)[Web App] in snet1
++
++    group snet2(cloud)[PE Subnet] in vnet
++    service pe1(server)[PE Blob] in snet2
++    service pe2(server)[PE Bus] in snet2
++
++    service storage(disk)[Storage] in env
++    service container(disk)[Container] in env
++    service bus(server)[Service Bus] in env
++    service dns(server)[DNS Zone] in env
++
++    service client(internet)[Client]
++
++    reg:B --> T:web
++    nsg:R --> L:asp
++    asp:R --> L:web
++    web:R --> L:pe1
++    pe1:R --> L:storage
++    storage:B --> T:container
++    web:B --> T:pe2
++    pe2:R --> L:bus
++    vm1:R --> L:pe2
++    </pre>
++
++    <h3>Explicit randomize: true &mdash; layout may vary on reload</h3>
++    <pre class="mermaid">
++%%{init: {"architecture": {"randomize": true}}}%%
++architecture-beta
++    group sub1(cloud)[Subscription A]
++    group vnet1(cloud)[VNet A] in sub1
++    service vm1(server)[VM] in vnet1
++
++    group sub2(cloud)[Subscription B]
++    group shared(cloud)[Shared] in sub2
++    service reg(database)[Registry] in shared
++
++    group env(cloud)[Environment] in sub2
++    group vnet(cloud)[VNet] in env
++    group snet1(cloud)[App Subnet] in vnet
++    service nsg(server)[NSG] in snet1
++    service asp(server)[App Plan] in snet1
++    service web(server)[Web App] in snet1
++
++    group snet2(cloud)[PE Subnet] in vnet
++    service pe1(server)[PE Blob] in snet2
++    service pe2(server)[PE Bus] in snet2
++
++    service storage(disk)[Storage] in env
++    service container(disk)[Container] in env
++    service bus(server)[Service Bus] in env
++    service dns(server)[DNS Zone] in env
++
++    service client(internet)[Client]
++
++    reg:B --> T:web
++    nsg:R --> L:asp
++    asp:R --> L:web
++    web:R --> L:pe1
++    pe1:R --> L:storage
++    storage:B --> T:container
++    web:B --> T:pe2
++    pe2:R --> L:bus
++    vm1:R --> L:pe2
++    </pre>
++
++    <script type="module">
++      import mermaid from '/mermaid.esm.mjs';
++      mermaid.initialize({
++        startOnLoad: true,
++        logLevel: 0,
++      });
++    </script>
++
++    <script src="/dev/reload.js"></script>
++  </body>
++</html>
+diff --git a/packages/mermaid/src/diagrams/architecture/architecture.spec.ts b/packages/mermaid/src/diagrams/architecture/architecture.spec.ts
+index 127dd61d7f9..fd1fe7110f0 100644
+--- a/packages/mermaid/src/diagrams/architecture/architecture.spec.ts
++++ b/packages/mermaid/src/diagrams/architecture/architecture.spec.ts
+@@ -108,6 +108,56 @@ describe('architecture diagrams', () => {
+     });
+   });
+ 
++  describe('randomize config', () => {
++    it('should default randomize to false', () => {
++      expect(db.getConfigField('randomize')).toBe(false);
++    });
++
++    it('should parse a complex deeply-nested diagram with randomize defaulting to false', async () => {
++      const str = `architecture-beta
++    group sub1(cloud)[Subscription A]
++    group vnet1(cloud)[VNet A] in sub1
++    service vm1(server)[VM] in vnet1
++
++    group sub2(cloud)[Subscription B]
++    group shared(cloud)[Shared] in sub2
++    service reg(database)[Registry] in shared
++
++    group env(cloud)[Environment] in sub2
++    group vnet(cloud)[VNet] in env
++    group snet1(cloud)[App Subnet] in vnet
++    service nsg(server)[NSG] in snet1
++    service asp(server)[App Plan] in snet1
++    service web(server)[Web App] in snet1
++
++    group snet2(cloud)[PE Subnet] in vnet
++    service pe1(server)[PE Blob] in snet2
++    service pe2(server)[PE Bus] in snet2
++
++    service storage(disk)[Storage] in env
++    service container(disk)[Container] in env
++    service bus(server)[Service Bus] in env
++    service dns(server)[DNS Zone] in env
++
++    service client(internet)[Client]
++
++    reg:B --> T:web
++    nsg:R --> L:asp
++    asp:R --> L:web
++    web:R --> L:pe1
++    pe1:R --> L:storage
++    storage:B --> T:container
++    web:B --> T:pe2
++    pe2:R --> L:bus
++    vm1:R --> L:pe2`;
++      await expect(parser.parse(str)).resolves.not.toThrow();
++      expect(db.getConfigField('randomize')).toBe(false);
++      expect(db.getServices()).toHaveLength(12);
++      expect(db.getGroups()).toHaveLength(8);
++      expect(db.getEdges()).toHaveLength(9);
++    });
++  });
++
+   describe('addJunction validation', () => {
+     it('should throw if junction id is already in use by a service', () => {
+       db.addGroup({ id: 'g1', title: 'Group' });
+
+From ec5036f5f3330ad590b8836f32fe23036f9f262d Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 6 Mar 2026 12:53:54 +0100
+Subject: [PATCH 3/7] feat(architecture): add `randomize` option for
+ architecture diagrams layout
+
+- Introduced a new `randomize` configuration option to allow random initial node positions in architecture diagrams.
+- Updated the configuration schema and types to include the new option, defaulting to `false` for deterministic layouts.
+- Modified the architecture renderer to utilize the `randomize` setting during layout calculations.
+---
+ .changeset/fix-architecture-deterministic-layout.md        | 5 +++++
+ packages/mermaid/src/config.type.ts                        | 7 +++++++
+ .../src/diagrams/architecture/architectureRenderer.ts      | 1 +
+ packages/mermaid/src/schemas/config.schema.yaml            | 7 +++++++
+ 4 files changed, 20 insertions(+)
+ create mode 100644 .changeset/fix-architecture-deterministic-layout.md
+
+diff --git a/.changeset/fix-architecture-deterministic-layout.md b/.changeset/fix-architecture-deterministic-layout.md
+new file mode 100644
+index 00000000000..ae91d14eb7c
+--- /dev/null
++++ b/.changeset/fix-architecture-deterministic-layout.md
+@@ -0,0 +1,5 @@
++---
++'mermaid': patch
++---
++
++feat: add `randomize` config option for architecture diagrams, defaulting to `false` for deterministic layout
+diff --git a/packages/mermaid/src/config.type.ts b/packages/mermaid/src/config.type.ts
+index 2ead7f7a6d2..5a4910d1921 100644
+--- a/packages/mermaid/src/config.type.ts
++++ b/packages/mermaid/src/config.type.ts
+@@ -1080,6 +1080,13 @@ export interface ArchitectureDiagramConfig extends BaseDiagramConfig {
+   padding?: number;
+   iconSize?: number;
+   fontSize?: number;
++  /**
++   * Whether to randomize initial node positions before running the layout algorithm.
++   * When false (default), the layout is deterministic and produces identical results on every render.
++   * When true, nodes start at random positions, which may produce varied but potentially better-spaced layouts.
++   *
++   */
++  randomize?: boolean;
+ }
+ /**
+  * The object containing configurations specific for mindmap diagrams
+diff --git a/packages/mermaid/src/diagrams/architecture/architectureRenderer.ts b/packages/mermaid/src/diagrams/architecture/architectureRenderer.ts
+index dbdb977498e..a687fe1b2a1 100644
+--- a/packages/mermaid/src/diagrams/architecture/architectureRenderer.ts
++++ b/packages/mermaid/src/diagrams/architecture/architectureRenderer.ts
+@@ -409,6 +409,7 @@ function layoutArchitecture(
+     const layout = cy.layout({
+       name: 'fcose',
+       quality: 'proof',
++      randomize: db.getConfigField('randomize'),
+       styleEnabled: false,
+       animate: false,
+       nodeDimensionsIncludeLabels: false,
+diff --git a/packages/mermaid/src/schemas/config.schema.yaml b/packages/mermaid/src/schemas/config.schema.yaml
+index 17dda2e9a09..67b1e1edb9a 100644
+--- a/packages/mermaid/src/schemas/config.schema.yaml
++++ b/packages/mermaid/src/schemas/config.schema.yaml
+@@ -975,6 +975,13 @@ $defs: # JSON Schema definition (maybe we should move these to a separate file)
+       fontSize:
+         type: number
+         default: 16
++      randomize:
++        description: |
++          Whether to randomize initial node positions before running the layout algorithm.
++          When false (default), the layout is deterministic and produces identical results on every render.
++          When true, nodes start at random positions, which may produce varied but potentially better-spaced layouts.
++        type: boolean
++        default: false
+ 
+   MindmapDiagramConfig:
+     title: Mindmap Diagram Config
+
+From 493e788d6dfbe461bf329a3b4844f67bc6fb75dc Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 6 Mar 2026 13:29:17 +0100
+Subject: [PATCH 4/7] refactor(architecture): standardize syntax in
+ architecture diagram tests
+
+- Updated the syntax for connections and labels in architecture diagram tests for consistency.
+- Added a new test case to validate rendering with the `randomize` option set to true, ensuring no errors occur during the process.
+---
+ .../rendering/architecture.spec.ts            | 128 ++++++++++++------
+ 1 file changed, 85 insertions(+), 43 deletions(-)
+
+diff --git a/cypress/integration/rendering/architecture.spec.ts b/cypress/integration/rendering/architecture.spec.ts
+index 0ac1d60ed71..866d6e1f87a 100644
+--- a/cypress/integration/rendering/architecture.spec.ts
++++ b/cypress/integration/rendering/architecture.spec.ts
+@@ -12,10 +12,10 @@ describe('architecture diagram', () => {
+                 service server(server)[Server] in api
+                 service gateway(internet)[Gateway] 
+ 
+-                db L--R server
+-                disk1 T--B server
+-                disk2 T--B db
+-                server T--B gateway
++                db:L -- R:server
++                disk1:T -- B:server
++                disk2:T -- B:db
++                server:T -- B:gateway
+             `
+     );
+   });
+@@ -52,9 +52,9 @@ describe('architecture diagram', () => {
+         
+                 service gateway(internet)[Gateway] in api
+         
+-                serv1 B--T serv2
+-                serv2 L--R db
+-                serv1 L--R gateway
++                serv1:B -- T:serv2
++                serv2:L -- R:db
++                serv1:L -- R:gateway
+             `
+     );
+   });
+@@ -74,10 +74,10 @@ describe('architecture diagram', () => {
+                 service serv2(server)[Server 2]
+                 service disk(disk)[Disk]
+         
+-                db L--R s3
+-                serv1 L--T s3
+-                serv2 L--B s3
+-                serv1 T--B disk
++                db:L -- R:s3
++                serv1:L -- T:s3
++                serv2:L -- B:s3
++                serv1:T -- B:disk
+             `
+     );
+   });
+@@ -90,15 +90,15 @@ describe('architecture diagram', () => {
+                 service servT(server)[Server 4]
+                 service servB(server)[Server 5]
+         
+-                servC (L--R) servL
+-                servC (R--L) servR
+-                servC (T--B) servT
+-                servC (B--T) servB
++                servC:L --> R:servL
++                servC:R --> L:servR
++                servC:T --> B:servT
++                servC:B --> T:servB
+         
+-                servL (T--L) servT
+-                servL (B--L) servB
+-                servR (T--R) servT
+-                servR (B--R) servB
++                servL:T --> L:servT
++                servL:B --> L:servB
++                servR:T --> R:servT
++                servR:B --> R:servB
+             `
+     );
+   });
+@@ -117,10 +117,10 @@ describe('architecture diagram', () => {
+                 service bottom_disk(disk)[Disk] in bottom_group
+                 service center_disk(disk)[Disk] in center_group
+         
+-                left_disk{group} (R--L) center_disk{group}
+-                right_disk{group} (L--R) center_disk{group}
+-                top_disk{group} (B--T) center_disk{group}
+-                bottom_disk{group} (T--B) center_disk{group}
++                left_disk{group}:R --> L:center_disk{group}
++                right_disk{group}:L --> R:center_disk{group}
++                top_disk{group}:B --> T:center_disk{group}
++                bottom_disk{group}:T --> B:center_disk{group}
+             `
+     );
+   });
+@@ -133,15 +133,15 @@ describe('architecture diagram', () => {
+                 service servT(server)[Server 4]
+                 service servB(server)[Server 5]
+         
+-                servC L-[Label]-R servL
+-                servC R-[Label]-L servR
+-                servC T-[Label]-B servT
+-                servC B-[Label]-T servB
++                servC:L -[Label]- R:servL
++                servC:R -[Label]- L:servR
++                servC:T -[Label]- B:servT
++                servC:B -[Label]- T:servB
+         
+-                servL T-[Label]-L servT
+-                servL B-[Label]-L servB
+-                servR T-[Label]-R servT
+-                servR B-[Label]-R servB
++                servL:T -[Label]- L:servT
++                servL:B -[Label]- L:servB
++                servR:T -[Label]- R:servT
++                servR:B -[Label]- R:servB
+             `
+     );
+   });
+@@ -156,12 +156,12 @@ describe('architecture diagram', () => {
+                 junction juncC
+                 junction juncR
+         
+-                left_disk R--L juncC
+-                top_disk B--T juncC
+-                bottom_disk T--B juncC
+-                juncC R--L juncR
+-                top_gateway B--T juncR
+-                bottom_gateway T--B juncR
++                left_disk:R -- L:juncC
++                top_disk:B -- T:juncC
++                bottom_disk:T -- B:juncC
++                juncC:R -- L:juncR
++                top_gateway:B -- T:juncR
++                bottom_gateway:T -- B:juncR
+             `
+     );
+   });
+@@ -178,15 +178,15 @@ describe('architecture diagram', () => {
+                 junction juncC in left
+                 junction juncR in right
+         
+-                left_disk R--L juncC
+-                top_disk B--T juncC
+-                bottom_disk T--B juncC
++                left_disk:R -- L:juncC
++                top_disk:B -- T:juncC
++                bottom_disk:T -- B:juncC
+         
+         
+-                top_gateway (B--T juncR
+-                bottom_gateway (T--B juncR
++                top_gateway:B --> T:juncR
++                bottom_gateway:T --> B:juncR
+         
+-                juncC{group} R--L) juncR{group}
++                juncC{group}:R --> L:juncR{group}
+             `
+     );
+   });
+@@ -293,6 +293,48 @@ describe('architecture diagram', () => {
+         cell:B --> T:rowspan
+     `);
+   });
++  it('should render with randomize: true without errors', () => {
++    imgSnapshotTest(
++      `architecture-beta
++                group sub1(cloud)[Subscription A]
++                group vnet1(cloud)[VNet A] in sub1
++                service vm1(server)[VM] in vnet1
++
++                group sub2(cloud)[Subscription B]
++                group shared(cloud)[Shared] in sub2
++                service reg(database)[Registry] in shared
++
++                group env(cloud)[Environment] in sub2
++                group vnet(cloud)[VNet] in env
++                group snet1(cloud)[App Subnet] in vnet
++                service nsg(server)[NSG] in snet1
++                service asp(server)[App Plan] in snet1
++                service web(server)[Web App] in snet1
++
++                group snet2(cloud)[PE Subnet] in vnet
++                service pe1(server)[PE Blob] in snet2
++                service pe2(server)[PE Bus] in snet2
++
++                service storage(disk)[Storage] in env
++                service container(disk)[Container] in env
++                service bus(server)[Service Bus] in env
++                service dns(server)[DNS Zone] in env
++
++                service client(internet)[Client]
++
++                reg:B --> T:web
++                nsg:R --> L:asp
++                asp:R --> L:web
++                web:R --> L:pe1
++                pe1:R --> L:storage
++                storage:B --> T:container
++                web:B --> T:pe2
++                pe2:R --> L:bus
++                vm1:R --> L:pe2
++            `,
++      { architecture: { randomize: true }, screenshot: false }
++    );
++  });
+ });
+ 
+ describe('architecture - external', () => {
+
+From df1a28506d77475f8c9fc02f106a935f1e95dd5e Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 13 Mar 2026 10:36:04 +0100
+Subject: [PATCH 5/7] chore: update mermaid version to minor for architecture
+ diagram changes
+
+---
+ .changeset/fix-architecture-deterministic-layout.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/.changeset/fix-architecture-deterministic-layout.md b/.changeset/fix-architecture-deterministic-layout.md
+index ae91d14eb7c..04deb4c9707 100644
+--- a/.changeset/fix-architecture-deterministic-layout.md
++++ b/.changeset/fix-architecture-deterministic-layout.md
+@@ -1,5 +1,5 @@
+ ---
+-'mermaid': patch
++'mermaid': minor
+ ---
+ 
+ feat: add `randomize` config option for architecture diagrams, defaulting to `false` for deterministic layout
+
+From 93d66a7b406d061fd3b4e020b676336663c85b66 Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 13 Mar 2026 10:36:51 +0100
+Subject: [PATCH 6/7] docs(architecture): add configuration section for
+ `randomize` option in architecture diagrams
+
+- Introduced a new section in the architecture documentation detailing the `randomize` option for initial node positions.
+- Provided examples for enabling randomization via frontmatter and `mermaid.initialize()`.
+- Updated the configuration table to include the new option and its default behavior.
+---
+ docs/syntax/architecture.md                   | 33 +++++++++++++++++++
+ .../mermaid/src/docs/syntax/architecture.md   | 33 +++++++++++++++++++
+ 2 files changed, 66 insertions(+)
+
+diff --git a/docs/syntax/architecture.md b/docs/syntax/architecture.md
+index 73fd41cb922..4277575e30e 100644
+--- a/docs/syntax/architecture.md
++++ b/docs/syntax/architecture.md
+@@ -191,6 +191,39 @@ architecture-beta
+     bottom_gateway:T -- B:junctionRight
+ ```
+ 
++## Configuration
++
++### `randomize` (v\<MERMAID_RELEASE_VERSION>+)
++
++By default, architecture diagrams produce a deterministic layout: the same diagram source always renders with the same node positions. This is because the `randomize` option defaults to `false`.
++
++Setting `randomize` to `true` randomizes initial node positions before running the layout algorithm, which may produce varied but potentially better-spaced layouts on each render.
++
++Via frontmatter:
++
++```
++%%{init: {"architecture": {"randomize": true}}}%%
++architecture-beta
++    group api(cloud)[API]
++    service db(database)[Database] in api
++    service server(server)[Server] in api
++    db:R --> L:server
++```
++
++Via `mermaid.initialize()`:
++
++```javascript
++mermaid.initialize({
++  architecture: {
++    randomize: true,
++  },
++});
++```
++
++| Option      | Type    | Default | Description                                                            |
++| ----------- | ------- | ------- | ---------------------------------------------------------------------- |
++| `randomize` | boolean | `false` | Whether to randomize initial node positions before running the layout. |
++
+ ## Icons
+ 
+ By default, architecture diagram supports the following icons: `cloud`, `database`, `disk`, `internet`, `server`.
+diff --git a/packages/mermaid/src/docs/syntax/architecture.md b/packages/mermaid/src/docs/syntax/architecture.md
+index ce2bab1f2f9..90e2d22ad3a 100644
+--- a/packages/mermaid/src/docs/syntax/architecture.md
++++ b/packages/mermaid/src/docs/syntax/architecture.md
+@@ -153,6 +153,39 @@ architecture-beta
+     bottom_gateway:T -- B:junctionRight
+ ```
+ 
++## Configuration
++
++### `randomize` (v<MERMAID_RELEASE_VERSION>+)
++
++By default, architecture diagrams produce a deterministic layout: the same diagram source always renders with the same node positions. This is because the `randomize` option defaults to `false`.
++
++Setting `randomize` to `true` randomizes initial node positions before running the layout algorithm, which may produce varied but potentially better-spaced layouts on each render.
++
++Via frontmatter:
++
++```
++%%{init: {"architecture": {"randomize": true}}}%%
++architecture-beta
++    group api(cloud)[API]
++    service db(database)[Database] in api
++    service server(server)[Server] in api
++    db:R --> L:server
++```
++
++Via `mermaid.initialize()`:
++
++```javascript
++mermaid.initialize({
++  architecture: {
++    randomize: true,
++  },
++});
++```
++
++| Option      | Type    | Default | Description                                                            |
++| ----------- | ------- | ------- | ---------------------------------------------------------------------- |
++| `randomize` | boolean | `false` | Whether to randomize initial node positions before running the layout. |
++
+ ## Icons
+ 
+ By default, architecture diagram supports the following icons: `cloud`, `database`, `disk`, `internet`, `server`.
+
+From 3f4df6700ce9f73b3db0b5e40c172e2cb81633b2 Mon Sep 17 00:00:00 2001
+From: Jeroen Smink <jeroensmink98@gmail.com>
+Date: Fri, 13 Mar 2026 10:38:34 +0100
+Subject: [PATCH 7/7] feat(schema): add `randomize` option to configuration
+ schema
+
+---
+ packages/mermaid/src/schemas/config.schema.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/packages/mermaid/src/schemas/config.schema.yaml b/packages/mermaid/src/schemas/config.schema.yaml
+index 67b1e1edb9a..a6e1c220f9c 100644
+--- a/packages/mermaid/src/schemas/config.schema.yaml
++++ b/packages/mermaid/src/schemas/config.schema.yaml
+@@ -965,6 +965,7 @@ $defs: # JSON Schema definition (maybe we should move these to a separate file)
+       - padding
+       - iconSize
+       - fontSize
++      - randomize
+     properties:
+       padding:
+         type: number

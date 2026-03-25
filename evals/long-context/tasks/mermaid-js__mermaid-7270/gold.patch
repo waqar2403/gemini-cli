@@ -1,0 +1,760 @@
+From 62ef5b8321950c75485574f1c504f9457b4d6a1c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?TATSUNO=20=E2=80=9CTaz=E2=80=9D=20Yasuhiro?=
+ <ytatsuno.jp@gmail.com>
+Date: Sun, 28 Dec 2025 12:51:03 +0900
+Subject: [PATCH 1/6] Add vertical timeline
+
+---
+ .changeset/flat-garlics-do.md                 |   5 +
+ demos/timeline.html                           |  13 +
+ .../diagrams/timeline/parser/timeline.jison   |  10 +-
+ .../diagrams/timeline/timeline-definition.ts  |  16 +-
+ .../src/diagrams/timeline/timeline.spec.js    |  24 ++
+ .../src/diagrams/timeline/timelineDb.js       |  12 +
+ .../timeline/timelineRendererVertical.ts      | 350 ++++++++++++++++++
+ packages/mermaid/src/docs/syntax/timeline.md  |  20 +
+ 8 files changed, 448 insertions(+), 2 deletions(-)
+ create mode 100644 .changeset/flat-garlics-do.md
+ create mode 100644 packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
+
+diff --git a/.changeset/flat-garlics-do.md b/.changeset/flat-garlics-do.md
+new file mode 100644
+index 00000000000..8326f920a57
+--- /dev/null
++++ b/.changeset/flat-garlics-do.md
+@@ -0,0 +1,5 @@
++---
++'mermaid': minor
++---
++
++feat: Add option to change timeline direction
+diff --git a/demos/timeline.html b/demos/timeline.html
+index b3b99a6dd10..4ec7f1c47aa 100644
+--- a/demos/timeline.html
++++ b/demos/timeline.html
+@@ -23,6 +23,19 @@
+           1940 : fourth step : fifth step
+ 				</pre>
+ 
++    <h2>Vertical Timeline</h2>
++    <pre class="mermaid">
++        timeline TD
++        title My day
++        section Wake up
++          0600 : step
++               : step
++        section Go to work
++          0800 : first step : second step
++               : third step very very very very very loooooong
++          1940 : fourth step : fifth step
++    </pre>
++
+     <h2>Medical Device Lifecycle Timeline</h2>
+     <pre class="mermaid">
+         timeline
+diff --git a/packages/mermaid/src/diagrams/timeline/parser/timeline.jison b/packages/mermaid/src/diagrams/timeline/parser/timeline.jison
+index 0fac8bd3332..5c28f995c55 100644
+--- a/packages/mermaid/src/diagrams/timeline/parser/timeline.jison
++++ b/packages/mermaid/src/diagrams/timeline/parser/timeline.jison
+@@ -17,6 +17,8 @@
+ \s+                     /* skip whitespace */
+ \#[^\n]*                /* skip comments */
+ 
++"timeline"[ \t]+LR       return 'timeline_lr';
++"timeline"[ \t]+TD       return 'timeline_td';
+ "timeline"               return 'timeline';
+ "title"\s[^\n]+       return 'title';
+ accTitle\s*":"\s*                                               { this.begin("acc_title");return 'acc_title'; }
+@@ -45,7 +47,13 @@ accDescr\s*"{"\s*                                { this.begin("acc_descr_multili
+ %% /* language grammar */
+ 
+ start
+-	: timeline document 'EOF' { return $2; }
++	: timeline_header document 'EOF' { return $2; }
++	;
++
++timeline_header
++	: timeline
++	| timeline_lr { yy.setDirection('LR'); }
++	| timeline_td { yy.setDirection('TD'); }
+ 	;
+ 
+ document
+diff --git a/packages/mermaid/src/diagrams/timeline/timeline-definition.ts b/packages/mermaid/src/diagrams/timeline/timeline-definition.ts
+index 0c556161089..29ff0de8cf1 100644
+--- a/packages/mermaid/src/diagrams/timeline/timeline-definition.ts
++++ b/packages/mermaid/src/diagrams/timeline/timeline-definition.ts
+@@ -2,11 +2,25 @@
+ import parser from './parser/timeline.jison';
+ import * as db from './timelineDb.js';
+ import renderer from './timelineRenderer.js';
++import verticalRenderer from './timelineRendererVertical.js';
+ import styles from './styles.js';
+ 
++const rendererSelector = {
++  setConf: () => {
++    // no-op
++  },
++  draw: (text: string, id: string, version: string, diagObj: any) => {
++    const direction = diagObj?.db?.getDirection?.() ?? 'LR';
++    if (direction === 'TD') {
++      return verticalRenderer.draw(text, id, version, diagObj);
++    }
++    return renderer.draw(text, id, version, diagObj);
++  },
++};
++
+ export const diagram = {
+   db,
+-  renderer,
++  renderer: rendererSelector,
+   parser,
+   styles,
+ };
+diff --git a/packages/mermaid/src/diagrams/timeline/timeline.spec.js b/packages/mermaid/src/diagrams/timeline/timeline.spec.js
+index 92af504c301..2b6f6246ba9 100644
+--- a/packages/mermaid/src/diagrams/timeline/timeline.spec.js
++++ b/packages/mermaid/src/diagrams/timeline/timeline.spec.js
+@@ -10,6 +10,30 @@ describe('when parsing a timeline ', function () {
+     setLogLevel('trace');
+   });
+   describe('Timeline', function () {
++    it('should default to LR direction when none is provided', function () {
++      let str = `timeline
++    section abc-123`;
++
++      timeline.parse(str);
++      expect(timelineDB.getDirection()).to.equal('LR');
++    });
++
++    it('should parse TD direction', function () {
++      let str = `timeline TD
++    section abc-123`;
++
++      timeline.parse(str);
++      expect(timelineDB.getDirection()).to.equal('TD');
++    });
++
++    it('should parse LR direction', function () {
++      let str = `timeline LR
++    section abc-123`;
++
++      timeline.parse(str);
++      expect(timelineDB.getDirection()).to.equal('LR');
++    });
++
+     it('should handle a simple section definition abc-123', function () {
+       let str = `timeline
+     section abc-123`;
+diff --git a/packages/mermaid/src/diagrams/timeline/timelineDb.js b/packages/mermaid/src/diagrams/timeline/timelineDb.js
+index 5269f67aeaa..aeb614acc35 100644
+--- a/packages/mermaid/src/diagrams/timeline/timelineDb.js
++++ b/packages/mermaid/src/diagrams/timeline/timelineDb.js
+@@ -1,6 +1,7 @@
+ import * as commonDb from '../common/commonDb.js';
+ let currentSection = '';
+ let currentTaskId = 0;
++let direction = 'LR';
+ 
+ const sections = [];
+ const tasks = [];
+@@ -13,9 +14,18 @@ export const clear = function () {
+   tasks.length = 0;
+   currentSection = '';
+   rawTasks.length = 0;
++  direction = 'LR';
+   commonDb.clear();
+ };
+ 
++export const setDirection = function (dir) {
++  direction = dir;
++};
++
++export const getDirection = function () {
++  return direction;
++};
++
+ export const addSection = function (txt) {
+   currentSection = txt;
+   sections.push(txt);
+@@ -93,6 +103,8 @@ const compileTasks = function () {
+ export default {
+   clear,
+   getCommonDb,
++  getDirection,
++  setDirection,
+   addSection,
+   getSections,
+   getTasks,
+diff --git a/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts b/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
+new file mode 100644
+index 00000000000..5e3ae8a1683
+--- /dev/null
++++ b/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
+@@ -0,0 +1,350 @@
++import svgDraw from './svgDraw.js';
++import { log } from '../../logger.js';
++import { getConfig } from '../../diagram-api/diagramAPI.js';
++import { setupGraphViewbox } from '../../setupGraphViewbox.js';
++import type { Diagram } from '../../Diagram.js';
++import type { MermaidConfig } from '../../config.type.js';
++import { selectSvgElement } from '../../rendering-util/selectSvgElement.js';
++import type { SVG } from '../../diagram-api/types.js';
++
++interface Block<TDesc, TSection> {
++  number: number;
++  descr: TDesc;
++  section: TSection;
++  width: number;
++  padding: number;
++  maxHeight: number;
++}
++
++interface TimelineTask {
++  id: number;
++  section: string;
++  type: string;
++  task: string;
++  score: number;
++  events: string[];
++}
++
++const NODE_WIDTH = 200;
++const NODE_PADDING = 5;
++const NODE_TOTAL_WIDTH = NODE_WIDTH + NODE_PADDING * 2;
++const EVENT_WIDTH = NODE_WIDTH + 100;
++const EVENT_TOTAL_WIDTH = EVENT_WIDTH + NODE_PADDING * 2;
++const EVENT_SPACING = 10;
++const EVENT_VERTICAL_GAP = 0;
++const SECTION_TASK_GAP = 20;
++const TASK_AXIS_GAP = 20;
++const TASK_VERTICAL_GAP = 30;
++const EVENT_AXIS_GAP = 50;
++
++export const draw = function (text: string, id: string, version: string, diagObj: Diagram) {
++  //1. Fetch the configuration
++  const conf = getConfig();
++  const LEFT_MARGIN = conf.timeline?.leftMargin ?? 50;
++
++  log.debug('timeline', diagObj.db);
++
++  const svg = selectSvgElement(id);
++
++  svg.append('g');
++
++  //4. Fetch the diagram data
++  // @ts-expect-error - db not typed yet
++  const tasks: TimelineTask[] = diagObj.db.getTasks();
++  // @ts-expect-error - db not typed yet
++  const title = diagObj.db.getCommonDb().getDiagramTitle();
++  log.debug('task', tasks);
++
++  //5. Initialize the diagram
++  svgDraw.initGraphics(svg);
++
++  // fetch Sections
++  // @ts-expect-error - db not typed yet
++  const sections: string[] = diagObj.db.getSections();
++  log.debug('sections', sections);
++
++  let maxSectionHeight = 0;
++  let maxTaskHeight = 0;
++  const masterX = 50 + LEFT_MARGIN;
++  let masterY = 50;
++  const contentTopY = masterY;
++  const sectionBeginX = masterX;
++  const leftWidth = NODE_TOTAL_WIDTH + TASK_AXIS_GAP;
++  const rightWidth = EVENT_TOTAL_WIDTH + EVENT_AXIS_GAP;
++  const axisX = sectionBeginX + leftWidth;
++  let sectionNumber = 0;
++  const hasSections = sections && sections.length > 0;
++  const timelineX = hasSections ? axisX : masterX + leftWidth;
++
++  const sectionWidth = Math.max(50, leftWidth + rightWidth - NODE_PADDING * 2);
++  //Calculate the max height of the sections
++  sections.forEach(function (section: string) {
++    const sectionNode: Block<string, number> = {
++      number: sectionNumber,
++      descr: section,
++      section: sectionNumber,
++      width: sectionWidth,
++      padding: NODE_PADDING,
++      maxHeight: maxSectionHeight,
++    };
++    const sectionHeight = svgDraw.getVirtualNodeHeight(svg, sectionNode, conf);
++    log.debug('sectionHeight before draw', sectionHeight);
++    maxSectionHeight = Math.max(maxSectionHeight, sectionHeight);
++  });
++
++  //tasks length and max event stack height
++  let maxEventStackHeight = 0;
++  log.debug('tasks.length', tasks.length);
++
++  for (const [i, task] of tasks.entries()) {
++    const taskNode: Block<TimelineTask, string> = {
++      number: i,
++      descr: task,
++      section: task.section,
++      width: NODE_WIDTH,
++      padding: NODE_PADDING,
++      maxHeight: maxTaskHeight,
++    };
++    const taskHeight = svgDraw.getVirtualNodeHeight(svg, taskNode, conf);
++    log.debug('taskHeight before draw', taskHeight);
++    maxTaskHeight = Math.max(maxTaskHeight, taskHeight);
++
++    //calculate maxEventStackHeight (vertical stack height for events)
++    let maxEventStackHeightTemp = 0;
++    for (const event of task.events) {
++      const eventNode = {
++        descr: event,
++        section: task.section,
++        number: task.section,
++        width: EVENT_WIDTH,
++        padding: NODE_PADDING,
++        maxHeight: 50,
++      };
++      maxEventStackHeightTemp += svgDraw.getVirtualNodeHeight(svg, eventNode, conf);
++    }
++    if (task.events.length > 0) {
++      maxEventStackHeightTemp += (task.events.length - 1) * EVENT_SPACING;
++    }
++    maxEventStackHeight =
++      Math.max(maxEventStackHeight, maxEventStackHeightTemp) + EVENT_VERTICAL_GAP;
++  }
++
++  log.debug('maxSectionHeight before draw', maxSectionHeight);
++  log.debug('maxTaskHeight before draw', maxTaskHeight);
++
++  const taskBlockHeight = Math.max(maxTaskHeight, maxEventStackHeight);
++  const taskSpacing = taskBlockHeight + TASK_VERTICAL_GAP;
++
++  if (hasSections) {
++    sections.forEach((section) => {
++      //filter task where tasks.section == section
++      const tasksForSection = tasks.filter((task) => task.section === section);
++
++      const sectionNode: Block<string, number> = {
++        number: sectionNumber,
++        descr: section,
++        section: sectionNumber,
++        width: sectionWidth,
++        padding: NODE_PADDING,
++        maxHeight: maxSectionHeight,
++      };
++      log.debug('sectionNode', sectionNode);
++      const sectionNodeWrapper = svg.append('g');
++      const node = svgDraw.drawNode(sectionNodeWrapper, sectionNode, sectionNumber, conf);
++      log.debug('sectionNode output', node);
++
++      const sectionX = timelineX - leftWidth;
++      sectionNodeWrapper.attr('transform', `translate(${sectionX}, ${masterY})`);
++
++      const taskStartY = masterY + node.height + SECTION_TASK_GAP;
++      //draw tasks for this section
++      if (tasksForSection.length > 0) {
++        drawTasks(
++          svg,
++          tasksForSection,
++          sectionNumber,
++          timelineX,
++          taskStartY,
++          maxTaskHeight,
++          conf,
++          taskSpacing,
++          false
++        );
++      }
++
++      const taskCount = tasksForSection.length;
++      const sectionHeight =
++        node.height +
++        SECTION_TASK_GAP +
++        taskSpacing * Math.max(taskCount, 1) -
++        (taskCount > 0 ? TASK_VERTICAL_GAP * 2 : 0);
++      masterY += sectionHeight;
++      sectionNumber++;
++    });
++  } else {
++    //draw tasks
++    drawTasks(
++      svg,
++      tasks,
++      sectionNumber,
++      timelineX,
++      masterY,
++      maxTaskHeight,
++      conf,
++      taskSpacing,
++      true
++    );
++  }
++
++  // Get BBox of the diagram (before drawing the axis line)
++  let box = svg.node()?.getBBox();
++  if (!box) {
++    throw new Error('bbox not found');
++  }
++  log.debug('bounds', box);
++
++  if (title) {
++    svg
++      .append('text')
++      .text(title)
++      .attr('x', box.width / 2 - LEFT_MARGIN)
++      .attr('font-size', '4ex')
++      .attr('font-weight', 'bold')
++      .attr('y', 20);
++    box = svg.node()?.getBBox();
++    if (!box) {
++      throw new Error('bbox not found');
++    }
++    log.debug('bounds after title', box);
++  }
++
++  const fontSize = conf.fontSize;
++  const arrowTopOffset = (fontSize || 16) * 2;
++  const arrowBottomPadding = (fontSize || 16) * 0.5 + 20;
++
++  const lineWrapper = svg.append('g').attr('class', 'lineWrapper');
++  // Draw activity line
++  lineWrapper
++    .append('line')
++    .attr('x1', timelineX)
++    .attr('y1', contentTopY - arrowTopOffset)
++    .attr('x2', timelineX)
++    .attr('y2', box.y + box.height + arrowBottomPadding)
++    .attr('stroke-width', 4)
++    .attr('stroke', 'black')
++    .attr('marker-end', 'url(#arrowhead)');
++  lineWrapper.lower();
++
++  // Setup the view box and size of the svg element
++  setupGraphViewbox(
++    undefined,
++    svg,
++    conf.timeline?.padding ?? 50,
++    conf.timeline?.useMaxWidth ?? false
++  );
++};
++
++export const drawTasks = function (
++  diagram: SVG,
++  tasks: TimelineTask[],
++  sectionColor: number,
++  timelineX: number,
++  masterY: number,
++  maxTaskHeight: number,
++  conf: MermaidConfig,
++  taskSpacing: number,
++  isWithoutSections: boolean
++) {
++  // Draw the tasks
++  for (const task of tasks) {
++    // create node from task
++    const taskNode = {
++      descr: task.task,
++      section: sectionColor,
++      number: sectionColor,
++      width: NODE_WIDTH,
++      padding: NODE_PADDING,
++      maxHeight: maxTaskHeight,
++    };
++
++    log.debug('taskNode', taskNode);
++    // create task wrapper
++    const taskWrapper = diagram.append('g').attr('class', 'taskWrapper');
++    const node = svgDraw.drawNode(taskWrapper, taskNode, sectionColor, conf);
++    const taskHeight = node.height;
++    //log task height
++    log.debug('taskHeight after draw', taskHeight);
++    const taskX = timelineX - TASK_AXIS_GAP - node.width;
++    taskWrapper.attr('transform', `translate(${taskX}, ${masterY})`);
++
++    // update max task height
++    maxTaskHeight = Math.max(maxTaskHeight, taskHeight);
++
++    // if task has events, draw them
++    if (task.events && task.events.length > 0) {
++      const eventsStartY = masterY;
++      const eventsX = timelineX + EVENT_AXIS_GAP;
++      drawEvents(diagram, task.events, sectionColor, timelineX, eventsX, eventsStartY, conf);
++    }
++
++    masterY = masterY + taskSpacing;
++    if (isWithoutSections && !conf.timeline?.disableMulticolor) {
++      sectionColor++;
++    }
++  }
++};
++
++export const drawEvents = function (
++  diagram: SVG,
++  events: string[],
++  sectionColor: number,
++  axisX: number,
++  eventsX: number,
++  startY: number,
++  conf: MermaidConfig
++) {
++  let currentY = startY;
++  // Draw the events
++  for (const event of events) {
++    // create node from event
++    const eventNode: Block<string, number> = {
++      descr: event,
++      section: sectionColor,
++      number: sectionColor,
++      width: EVENT_WIDTH,
++      padding: NODE_PADDING,
++      maxHeight: 0,
++    };
++
++    //log task node
++    log.debug('eventNode', eventNode);
++    // create event wrapper
++    const eventWrapper = diagram.append('g').attr('class', 'eventWrapper');
++    const node = svgDraw.drawNode(eventWrapper, eventNode, sectionColor, conf);
++    const eventHeight = node.height;
++    eventWrapper.attr('transform', `translate(${eventsX}, ${currentY})`);
++
++    const lineWrapper = diagram.append('g').attr('class', 'lineWrapper');
++    const lineY = currentY + eventHeight / 2;
++    lineWrapper
++      .append('line')
++      .attr('x1', axisX)
++      .attr('y1', lineY)
++      .attr('x2', eventsX)
++      .attr('y2', lineY)
++      .attr('stroke-width', 2)
++      .attr('stroke', 'black')
++      .attr('marker-end', 'url(#arrowhead)')
++      .attr('stroke-dasharray', '5,5');
++
++    currentY = currentY + eventHeight + EVENT_SPACING;
++  }
++  return currentY - startY;
++};
++
++export default {
++  setConf: () => {
++    // no-op
++  },
++  draw,
++};
+diff --git a/packages/mermaid/src/docs/syntax/timeline.md b/packages/mermaid/src/docs/syntax/timeline.md
+index 26e30f80b67..1ef491b4c9a 100644
+--- a/packages/mermaid/src/docs/syntax/timeline.md
++++ b/packages/mermaid/src/docs/syntax/timeline.md
+@@ -121,6 +121,26 @@ timeline
+           Bullet 4 : sub-point 4a : sub-point 4b
+ ```
+ 
++### Direction
++
++Timeline can change its direction by the keyword after `timeline`.
++
++```mermaid-example
++timeline TD
++  title MermaidChart 2023 Timeline
++    section 2023 Q1 <br> Release Personal Tier
++      Bullet 1 : sub-point 1a : sub-point 1b
++      Bullet 2 : sub-point 2a : sub-point 2b
++    section 2023 Q2 <br> Release XYZ Tier
++      Bullet 3 : sub-point <br> 3a : sub-point 3b
++      Bullet 4 : sub-point 4a : sub-point 4b
++```
++
++Possible directions are:
++
++- `LR`: Left to right (default)
++- `TD`: Top top down.
++
+ ## Styling of time periods and events
+ 
+ As explained earlier, each section has a color scheme, and each time period and event under a section follow the similar color scheme.
+
+From 70c881873fbf15e239673ad897b6b4552b2f801d Mon Sep 17 00:00:00 2001
+From: "autofix-ci[bot]" <114827586+autofix-ci[bot]@users.noreply.github.com>
+Date: Sun, 28 Dec 2025 08:52:05 +0000
+Subject: [PATCH 2/6] [autofix.ci] apply automated fixes
+
+---
+ docs/syntax/timeline.md | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/docs/syntax/timeline.md b/docs/syntax/timeline.md
+index cbebbcd110b..29da43de262 100644
+--- a/docs/syntax/timeline.md
++++ b/docs/syntax/timeline.md
+@@ -185,6 +185,37 @@ timeline
+           Bullet 4 : sub-point 4a : sub-point 4b
+ ```
+ 
++### Direction
++
++Timeline can change its direction by the keyword after `timeline`.
++
++```mermaid-example
++timeline TD
++  title MermaidChart 2023 Timeline
++    section 2023 Q1 <br> Release Personal Tier
++      Bullet 1 : sub-point 1a : sub-point 1b
++      Bullet 2 : sub-point 2a : sub-point 2b
++    section 2023 Q2 <br> Release XYZ Tier
++      Bullet 3 : sub-point <br> 3a : sub-point 3b
++      Bullet 4 : sub-point 4a : sub-point 4b
++```
++
++```mermaid
++timeline TD
++  title MermaidChart 2023 Timeline
++    section 2023 Q1 <br> Release Personal Tier
++      Bullet 1 : sub-point 1a : sub-point 1b
++      Bullet 2 : sub-point 2a : sub-point 2b
++    section 2023 Q2 <br> Release XYZ Tier
++      Bullet 3 : sub-point <br> 3a : sub-point 3b
++      Bullet 4 : sub-point 4a : sub-point 4b
++```
++
++Possible directions are:
++
++- `LR`: Left to right (default)
++- `TD`: Top top down.
++
+ ## Styling of time periods and events
+ 
+ As explained earlier, each section has a color scheme, and each time period and event under a section follow the similar color scheme.
+
+From 3819a386552c3d17e8b06e30fbed2ea762465629 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?TATSUNO=20=E2=80=9CTaz=E2=80=9D=20Yasuhiro?=
+ <ytatsuno.jp@gmail.com>
+Date: Thu, 12 Feb 2026 08:03:34 +0900
+Subject: [PATCH 3/6] add release version
+
+---
+ packages/mermaid/src/docs/syntax/timeline.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/mermaid/src/docs/syntax/timeline.md b/packages/mermaid/src/docs/syntax/timeline.md
+index 1ef491b4c9a..b860678bd25 100644
+--- a/packages/mermaid/src/docs/syntax/timeline.md
++++ b/packages/mermaid/src/docs/syntax/timeline.md
+@@ -121,7 +121,7 @@ timeline
+           Bullet 4 : sub-point 4a : sub-point 4b
+ ```
+ 
+-### Direction
++### Direction (v<MERMAID_RELEASE_VERSION>+)
+ 
+ Timeline can change its direction by the keyword after `timeline`.
+ 
+
+From 69bcfc9175a6ff73f6dbed083c57e2a10675584b Mon Sep 17 00:00:00 2001
+From: "autofix-ci[bot]" <114827586+autofix-ci[bot]@users.noreply.github.com>
+Date: Wed, 11 Feb 2026 23:08:52 +0000
+Subject: [PATCH 4/6] [autofix.ci] apply automated fixes
+
+---
+ docs/syntax/timeline.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/syntax/timeline.md b/docs/syntax/timeline.md
+index 29da43de262..61ff4df4179 100644
+--- a/docs/syntax/timeline.md
++++ b/docs/syntax/timeline.md
+@@ -185,7 +185,7 @@ timeline
+           Bullet 4 : sub-point 4a : sub-point 4b
+ ```
+ 
+-### Direction
++### Direction (v\<MERMAID_RELEASE_VERSION>+)
+ 
+ Timeline can change its direction by the keyword after `timeline`.
+ 
+
+From cbbd3465bda6876e7cb09de2a0a289be11469fad Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?TATSUNO=20=E2=80=9CTaz=E2=80=9D=20Yasuhiro?=
+ <ytatsuno.jp@gmail.com>
+Date: Wed, 18 Feb 2026 20:47:46 +0900
+Subject: [PATCH 5/6] add visual regression test
+
+---
+ .../integration/rendering/timeline.spec.ts    | 30 +++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/cypress/integration/rendering/timeline.spec.ts b/cypress/integration/rendering/timeline.spec.ts
+index 3785f5fcc45..35405f925f2 100644
+--- a/cypress/integration/rendering/timeline.spec.ts
++++ b/cypress/integration/rendering/timeline.spec.ts
+@@ -225,4 +225,34 @@ timeline
+       {}
+     );
+   });
++
++  describe('Vertical Timeline (TD)', () => {
++    it('13: should render a simple vertical timeline with no specific sections', () => {
++      imgSnapshotTest(
++        `timeline TD
++    title History of Social Media Platform
++    2002 : LinkedIn
++    2004 : Facebook : Google
++    2005 : YouTube
++    2006 : Twitter
++      `,
++        {}
++      );
++    });
++    it('14: should render a vertical timeline diagram with sections', () => {
++      imgSnapshotTest(
++        `timeline TD
++    title Timeline of Industrial Revolution
++    section 17th-20th century
++        Industry 1.0 : Machinery, Water power, Steam <br>power
++        Industry 2.0 : Electricity, Internal combustion engine, Mass production
++        Industry 3.0 : Electronics, Computers, Automation
++    section 21st century
++        Industry 4.0 : Internet, Robotics, Internet of Things
++        Industry 5.0 : Artificial intelligence, Big data,3D printing
++      `,
++        {}
++      );
++    });
++  });
+ });
+
+From 344963791e6937411fbac3e65225678ccb60aa6b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?TATSUNO=20=E2=80=9CTaz=E2=80=9D=20Yasuhiro?=
+ <ytatsuno.jp@gmail.com>
+Date: Wed, 4 Mar 2026 10:19:48 +0900
+Subject: [PATCH 6/6] handle string fontSize correctly
+
+---
+ .../src/diagrams/timeline/timelineRendererVertical.ts      | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts b/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
+index 5e3ae8a1683..16caffcac3c 100644
+--- a/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
++++ b/packages/mermaid/src/diagrams/timeline/timelineRendererVertical.ts
+@@ -6,6 +6,7 @@ import type { Diagram } from '../../Diagram.js';
+ import type { MermaidConfig } from '../../config.type.js';
+ import { selectSvgElement } from '../../rendering-util/selectSvgElement.js';
+ import type { SVG } from '../../diagram-api/types.js';
++import { parseFontSize } from '../../utils.js';
+ 
+ interface Block<TDesc, TSection> {
+   number: number;
+@@ -218,9 +219,9 @@ export const draw = function (text: string, id: string, version: string, diagObj
+     log.debug('bounds after title', box);
+   }
+ 
+-  const fontSize = conf.fontSize;
+-  const arrowTopOffset = (fontSize || 16) * 2;
+-  const arrowBottomPadding = (fontSize || 16) * 0.5 + 20;
++  const [fontSize] = parseFontSize(conf.fontSize);
++  const arrowTopOffset = (fontSize ?? 16) * 2;
++  const arrowBottomPadding = (fontSize ?? 16) * 0.5 + 20;
+ 
+   const lineWrapper = svg.append('g').attr('class', 'lineWrapper');
+   // Draw activity line

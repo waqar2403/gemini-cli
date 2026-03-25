@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "instance_id": "etcd-io__etcd-20492",
+  "repo": {
+    "full_name": "etcd-io/etcd",
+    "url": "https://github.com/etcd-io/etcd",
+    "base_commit": "b83b67e483936a94e59a61198934e88bf0ef95b1",
+    "primary_language": "Go",
+    "languages": [
+      "Go"
+    ]
+  },
+  "problem": {
+    "statement": "# Problem Scenario\nWhen an etcd server encounters a large number of write requests, and its applying rate is unable to process these requests in a timely manner (for example, when the Kubernetes API server writes a large number of Event objects, creates a large number of Pods in bulk, or unexpected batch Pods restarts occur), the server may return `ErrTooManyRequests` due to the current logic as below. This is understood as a protective mechanism. However, the current strategy can lead to catastrophic consequences.\n```\nfunc (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*apply2.Result, error) {\n\n\tif ci > ai+maxGapBetweenApplyAndCommitIndex {\n\t\treturn nil, errors.ErrTooManyRequests\n\t}\n}\n```\n\nThe Kubernetes API server binds the storage of Event objects to Leases, aiming to automatically clean up associated Events once the Lease expires. Lease expiration is handled by the etcd leader polling the Leases and initiating `LeaseRevoke` requests. If the etcd cluster is in the aforementioned protective state at this time, the `LeaseRevoke` requests may have no chance to be executed (because `Txn` request is much more than `LeaseRevoke`), leading to a surge in the number of keys, further negatively affecting the apply rate, and ultimately causing etcd completely unavailable.\n\nThe core issue is that the current protection logic does not differentiate between user requests and internal system requests, resulting in indiscriminate rejection. When internal system requests cannot be executed, the system state may deteriorate, finally causing a system crash. `LeaseRevoke` is just one such internal system request. `Compact` requests have similar issues.\n\n# Proposal\n1. As discussed in #18175 , configurable `maxGapBetweenApplyAndCommitIndex` would be more flexible.\n2. Within the protection logic, reserve some queue space specifically for critical requests, so that essential system requests (`LeaseRevoke`, `Compact`) would have an chance to be executed under system pressure, preventing system crashes. Demo codes as below.\n\n```\nfunc (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*apply2.Result, error) {\n\n\tif isTooLargeGap(ai, ci, &r) {\n\t\treturn nil, errors.ErrTooManyRequests\n\t}\n}\n\nfunc isTooLargeGap(ai, ci uint64, r *pb.InternalRaftRequest) bool {\n\tisCriticalReq := r != nil && (r.Compact != nil || r.LeaseRevoke != nil)\n\t// for normal request\n\tif ci > ai+maxGapBetweenApplyAndCommitIndex && !isCriticalReq {\n\t\treturn true\n\t}\n\t// for system critical request, have a seperate 500 queue buffer.\n\tif ci - ai > maxGapBetweenApplyAndCommitIndex + 500 && isCriticalReq {\n\t    return true\n\t}\n\n\treturn false\n}\n```",
+    "source": "issue",
+    "source_url": "https://github.com/etcd-io/etcd/issues/20396",
+    "source_id": 20396
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "CHANGELOG/CHANGELOG-3.7.md",
+      "server/etcdserver/server_test.go",
+      "server/etcdserver/util.go",
+      "server/etcdserver/util_test.go",
+      "server/etcdserver/v3_server.go",
+      "server/features/etcd_features.go"
+    ],
+    "affected_directories": [
+      "CHANGELOG",
+      "server/etcdserver",
+      "server/features"
+    ],
+    "files_changed": 6,
+    "directories_changed": 3,
+    "insertions": 100,
+    "deletions": 5,
+    "test_files_changed": [
+      "server/etcdserver/server_test.go",
+      "server/etcdserver/util_test.go"
+    ],
+    "source_files_changed": [
+      "CHANGELOG/CHANGELOG-3.7.md",
+      "server/etcdserver/util.go",
+      "server/etcdserver/v3_server.go",
+      "server/features/etcd_features.go"
+    ]
+  },
+  "provenance": {
+    "pr_number": 20492,
+    "pr_url": "https://github.com/etcd-io/etcd/pull/20492",
+    "pr_title": "stability enhancement during overload conditions",
+    "pr_merged_at": "2026-03-24T13:16:48Z",
+    "issue_number": 20396,
+    "issue_url": "https://github.com/etcd-io/etcd/issues/20396",
+    "issue_created_at": "2025-07-24T09:02:17Z",
+    "issue_labels": [
+      "type/feature",
+      "stage/tracked"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "api-boundary"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 6,
+    "directories_changed": 3,
+    "cross_package": false,
+    "insertions": 100,
+    "deletions": 5,
+    "dependency_depth": 4,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 13.5
+  },
+  "contamination": {
+    "issue_created_at": "2025-07-24T09:02:17Z",
+    "pr_merged_at": "2026-03-24T13:16:48Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "go",
+    "runtime_version": "1.22",
+    "package_manager": "go",
+    "install_command": "go mod download",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "go test ./...",
+    "fail_to_pass": [
+      "server/etcdserver/server_test.go",
+      "server/etcdserver/util_test.go"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "CHANGELOG/CHANGELOG-3.7.md",
+      "server/etcdserver/server_test.go",
+      "server/etcdserver/util.go",
+      "server/etcdserver/util_test.go",
+      "server/etcdserver/v3_server.go",
+      "server/features/etcd_features.go"
+    ],
+    "dependency_chain": [
+      "CHANGELOG/CHANGELOG-3.7.md",
+      "server/etcdserver/util.go",
+      "server/etcdserver/v3_server.go",
+      "server/features/etcd_features.go"
+    ],
+    "min_context_tokens": 12000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

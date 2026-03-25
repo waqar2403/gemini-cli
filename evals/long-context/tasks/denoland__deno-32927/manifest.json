@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "instance_id": "denoland__deno-32927",
+  "repo": {
+    "full_name": "denoland/deno",
+    "url": "https://github.com/denoland/deno",
+    "base_commit": "dcc04bbd62563016a30a8fa4eb66f4598cae857b",
+    "primary_language": "Rust",
+    "languages": [
+      "Rust",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "After updating from Deno 2.7.4 to 2.7.7, using node:fs.cp from one allow read directory into another allow read-write directory bubbles read requests up to /home directory. When these are now ignored, the entire operation fails.\n\nTo reproduce, clone this repo: https://github.com/Sytm/deno-test and then run `deno task callback` on v2.7.4 and then on v2.7.7.\n\nOn 2.7.4, this operation works, despite ignoring read requests to directories higher in the hierarchy, but when ignoring these read requests on v2.7.7, it no longer works.\n\nVersion: Deno 2.7.7",
+    "source": "issue",
+    "source_url": "https://github.com/denoland/deno/issues/32923",
+    "source_id": 32923
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "ext/node/ops/fs.rs",
+      "tests/specs/node/fs_cp_ignored_permissions/__test__.jsonc",
+      "tests/specs/node/fs_cp_ignored_permissions/deno.json",
+      "tests/specs/node/fs_cp_ignored_permissions/dir1/data.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/.gitkeep",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_cb.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_promise.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_sync.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/main.out",
+      "tests/specs/node/fs_cp_ignored_permissions/main.ts"
+    ],
+    "affected_directories": [
+      "ext/node/ops",
+      "tests/specs/node/fs_cp_ignored_permissions",
+      "tests/specs/node/fs_cp_ignored_permissions/dir1",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2"
+    ],
+    "files_changed": 10,
+    "directories_changed": 4,
+    "insertions": 67,
+    "deletions": 2,
+    "test_files_changed": [
+      "tests/specs/node/fs_cp_ignored_permissions/__test__.jsonc",
+      "tests/specs/node/fs_cp_ignored_permissions/deno.json",
+      "tests/specs/node/fs_cp_ignored_permissions/dir1/data.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/.gitkeep",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_cb.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_promise.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_sync.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/main.out",
+      "tests/specs/node/fs_cp_ignored_permissions/main.ts"
+    ],
+    "source_files_changed": [
+      "ext/node/ops/fs.rs"
+    ]
+  },
+  "provenance": {
+    "pr_number": 32927,
+    "pr_url": "https://github.com/denoland/deno/pull/32927",
+    "pr_title": "fix(ext/node): `fs.cp` across allowed dirs with ignored read permissions",
+    "pr_merged_at": "2026-03-24T13:47:20Z",
+    "issue_number": 32923,
+    "issue_url": "https://github.com/denoland/deno/issues/32923",
+    "issue_created_at": "2026-03-22T17:22:15Z",
+    "issue_labels": [
+      "node compat"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 10,
+    "directories_changed": 4,
+    "cross_package": false,
+    "insertions": 67,
+    "deletions": 2,
+    "dependency_depth": 1,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 11.9
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-22T17:22:15Z",
+    "pr_merged_at": "2026-03-24T13:47:20Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "rust",
+    "runtime_version": "1.77",
+    "package_manager": "cargo",
+    "install_command": "cargo fetch",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "cargo test",
+    "fail_to_pass": [
+      "tests/specs/node/fs_cp_ignored_permissions/__test__.jsonc",
+      "tests/specs/node/fs_cp_ignored_permissions/deno.json",
+      "tests/specs/node/fs_cp_ignored_permissions/dir1/data.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/.gitkeep",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_cb.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_promise.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_sync.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/main.out",
+      "tests/specs/node/fs_cp_ignored_permissions/main.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "ext/node/ops/fs.rs",
+      "tests/specs/node/fs_cp_ignored_permissions/__test__.jsonc",
+      "tests/specs/node/fs_cp_ignored_permissions/deno.json",
+      "tests/specs/node/fs_cp_ignored_permissions/dir1/data.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/.gitkeep",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_cb.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_promise.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/dir2/data_sync.txt",
+      "tests/specs/node/fs_cp_ignored_permissions/main.out",
+      "tests/specs/node/fs_cp_ignored_permissions/main.ts"
+    ],
+    "dependency_chain": [
+      "ext/node/ops/fs.rs"
+    ],
+    "min_context_tokens": 20000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

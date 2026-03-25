@@ -1,0 +1,271 @@
+From b2fa2ea58763e7a3c80efd9222245393dc6fad43 Mon Sep 17 00:00:00 2001
+From: stianst <stianst@gmail.com>
+Date: Mon, 16 Mar 2026 12:24:47 +0100
+Subject: [PATCH] Promote federated client authentication, including OIDC and
+ Kube to fully supported
+
+Closes #42634, closes #42635, closes #42826, closes #44412
+
+Signed-off-by: stianst <stianst@gmail.com>
+---
+ .../src/main/java/org/keycloak/common/Profile.java |  4 ++--
+ .../documentation/release_notes/topics/26_6_0.adoc |  8 ++++++++
+ .../admin/authentication/InitialFlowsTest.java     |  2 ++
+ .../tests/admin/authentication/ProvidersTest.java  |  2 ++
+ .../IdentityProviderIssuerTest.java                | 12 +-----------
+ .../external/BaseClientAuthTest.java               |  2 +-
+ .../external/ClientAuthIdpServerConfig.java        | 14 --------------
+ .../external/FederatedClientAuthConflictsTest.java |  2 +-
+ .../FederatedClientAuthFromKeycloakTest.java       |  2 +-
+ .../external/FederatedClientAuthMappingTest.java   |  2 +-
+ .../external/KubernetesClientAuthTest.java         | 12 +-----------
+ .../external/SpiffeClientAuthTest.java             |  5 +++--
+ 12 files changed, 23 insertions(+), 44 deletions(-)
+ delete mode 100644 tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java
+
+diff --git a/common/src/main/java/org/keycloak/common/Profile.java b/common/src/main/java/org/keycloak/common/Profile.java
+index 4340e64342aa..72da06cb4d99 100755
+--- a/common/src/main/java/org/keycloak/common/Profile.java
++++ b/common/src/main/java/org/keycloak/common/Profile.java
+@@ -97,11 +97,11 @@ public enum Feature {
+         STEP_UP_AUTHENTICATION("Step-up Authentication", Type.DEFAULT),
+         STEP_UP_AUTHENTICATION_SAML("Step-up Authentication Saml", Type.PREVIEW, Feature.STEP_UP_AUTHENTICATION),
+ 
+-        CLIENT_AUTH_FEDERATED("Authenticates client based on assertions issued by identity provider", Type.PREVIEW),
++        CLIENT_AUTH_FEDERATED("Authenticates client based on assertions issued by identity provider", Type.DEFAULT),
+ 
+         SPIFFE("SPIFFE trust relationship provider", Type.PREVIEW),
+ 
+-        KUBERNETES_SERVICE_ACCOUNTS("Kubernetes service accounts trust relationship provider", Type.PREVIEW),
++        KUBERNETES_SERVICE_ACCOUNTS("Kubernetes service accounts trust relationship provider", Type.DEFAULT),
+ 
+         // Check if kerberos is available in underlying JVM and auto-detect if feature should be enabled or disabled by default based on that
+         KERBEROS("Kerberos", Type.DEFAULT, 1, () -> KerberosJdkProvider.getProvider().isKerberosAvailable()),
+diff --git a/docs/documentation/release_notes/topics/26_6_0.adoc b/docs/documentation/release_notes/topics/26_6_0.adoc
+index 05f257e549e8..487ce988be7c 100644
+--- a/docs/documentation/release_notes/topics/26_6_0.adoc
++++ b/docs/documentation/release_notes/topics/26_6_0.adoc
+@@ -131,3 +131,11 @@ The existing `manage-membership` scope keeps its current behavior for target gro
+ = JWT Authorization Grant promoted to supported
+ 
+ In this release, the JWT Authorization Grant (https://datatracker.ietf.org/doc/html/rfc7523[RFC 7523]) feature is promoted from preview to default. This grant allows to use an external signed JWT assertions to request OAuth 2.0 access tokens. See the link:{securing_apps_base_link}/jwt-authorization-grant[JWT Authorization Grant guide] for additional details.
++
++= Federated client authentication promoted to supported
++
++Federated client authentication is now promoted to supported, including support for client assertions issued by
++external OpenID Connect identity providers and Kubernetes Service Accounts.
++
++Since the OAuth SPIFFE Client Authentication specification is still in a draft status this feature remains a preview
++feature in Keycloak.
+diff --git a/tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java b/tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java
+index 24180cb6c663..5debe112564d 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/admin/authentication/InitialFlowsTest.java
+@@ -159,12 +159,14 @@ private LinkedList<FlowExecutions> expectedFlows() {
+         addExecExport(flow, null, false, "client-jwt", false, null, ALTERNATIVE, 20);
+         addExecExport(flow, null, false, "client-secret-jwt", false, null, ALTERNATIVE, 30);
+         addExecExport(flow, null, false, "client-x509", false, null, ALTERNATIVE, 40);
++        addExecExport(flow, null, false, "federated-jwt", false, null, ALTERNATIVE, 50);
+ 
+         execs = new LinkedList<>();
+         addExecInfo(execs, "Client Id and Secret", "client-secret", false, 0, 0, ALTERNATIVE, null, new String[]{REQUIRED, ALTERNATIVE, DISABLED}, 10);
+         addExecInfo(execs, "Signed JWT", "client-jwt", false, 0, 1, ALTERNATIVE, null, new String[]{REQUIRED, ALTERNATIVE, DISABLED}, 20);
+         addExecInfo(execs, "Signed JWT with Client Secret", "client-secret-jwt", false, 0, 2, ALTERNATIVE, null, new String[]{REQUIRED, ALTERNATIVE, DISABLED}, 30);
+         addExecInfo(execs, "X509 Certificate", "client-x509", false, 0, 3, ALTERNATIVE, null, new String[]{REQUIRED, ALTERNATIVE, DISABLED}, 40);
++        addExecInfo(execs, "Signed JWT - Federated", "federated-jwt", false, 0, 4, ALTERNATIVE, null, new String[]{REQUIRED, ALTERNATIVE, DISABLED}, 50);
+         expected.add(new FlowExecutions(flow, execs));
+ 
+         flow = newFlow("direct grant", "OpenID Connect Resource Owner Grant", "basic-flow", true, true);
+diff --git a/tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java b/tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java
+index 39c8044cb6a3..671e2a049449 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/admin/authentication/ProvidersTest.java
+@@ -92,6 +92,8 @@ public void testClientAuthenticatorProviders() {
+                 "Validates client based on a X509 Certificate", false);
+         addClientAuthenticatorProviderInfo(expected, "client-secret-jwt", "Signed JWT with Client Secret",
+                 "Validates client based on signed JWT issued by client and signed with the Client Secret", true);
++        addClientAuthenticatorProviderInfo(expected, "federated-jwt", "Signed JWT - Federated",
++                "Validates client based on signed JWT issued and signed by an external identity provider", false);
+ 
+         compareProviders(expected, result);
+     }
+diff --git a/tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java b/tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java
+index 9af8409e757c..70f7e1c6619f 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/admin/identityprovider/IdentityProviderIssuerTest.java
+@@ -25,20 +25,17 @@
+ import org.keycloak.broker.jwtauthorizationgrant.JWTAuthorizationGrantIdentityProviderFactory;
+ import org.keycloak.broker.kubernetes.KubernetesIdentityProviderFactory;
+ import org.keycloak.broker.oidc.OIDCIdentityProviderFactory;
+-import org.keycloak.common.Profile;
+ import org.keycloak.representations.idm.ErrorRepresentation;
+ import org.keycloak.representations.idm.IdentityProviderRepresentation;
+ import org.keycloak.social.google.GoogleIdentityProviderFactory;
+ import org.keycloak.testframework.annotations.KeycloakIntegrationTest;
+-import org.keycloak.testframework.server.KeycloakServerConfig;
+-import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
+ 
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ 
+-@KeycloakIntegrationTest(config = IdentityProviderIssuerTest.TestServerConfig.class)
++@KeycloakIntegrationTest
+ public class IdentityProviderIssuerTest extends AbstractIdentityProviderTest {
+ 
+     @Test
+@@ -216,11 +213,4 @@ public IdentityProviderRepresentation createRep(String alias, String providerId,
+ 
+         return identityProvider;
+     }
+-
+-    public static class TestServerConfig implements KeycloakServerConfig {
+-        @Override
+-        public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
+-            return config.features(Profile.Feature.KUBERNETES_SERVICE_ACCOUNTS);
+-        }
+-    }
+ }
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java
+index 725acb1ad646..0e6dc6327a04 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/BaseClientAuthTest.java
+@@ -19,7 +19,7 @@
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+-@KeycloakIntegrationTest(config = ClientAuthIdpServerConfig.class)
++@KeycloakIntegrationTest
+ public class BaseClientAuthTest extends AbstractBaseClientAuthTest {
+ 
+     private static final String IDP_ALIAS = "external-idp";
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java
+deleted file mode 100644
+index 7dc5b14768cd..000000000000
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/ClientAuthIdpServerConfig.java
++++ /dev/null
+@@ -1,14 +0,0 @@
+-package org.keycloak.tests.client.authentication.external;
+-
+-import org.keycloak.common.Profile;
+-import org.keycloak.testframework.server.KeycloakServerConfig;
+-import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
+-
+-public class ClientAuthIdpServerConfig implements KeycloakServerConfig {
+-
+-    @Override
+-    public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
+-        return config.features(Profile.Feature.CLIENT_AUTH_FEDERATED);
+-    }
+-
+-}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java
+index 4c52aca86f99..3613774e101a 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthConflictsTest.java
+@@ -30,7 +30,7 @@
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+-@KeycloakIntegrationTest(config = ClientAuthIdpServerConfig.class)
++@KeycloakIntegrationTest
+ public class FederatedClientAuthConflictsTest {
+ 
+     @InjectOAuthIdentityProvider
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java
+index 5be8df7803b3..d83136664457 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthFromKeycloakTest.java
+@@ -21,7 +21,7 @@
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+-@KeycloakIntegrationTest(config = ClientAuthIdpServerConfig.class)
++@KeycloakIntegrationTest
+ public class FederatedClientAuthFromKeycloakTest {
+ 
+     private static final String IDP_ALIAS = "keycloak-idp";
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java
+index 031fab5f5b9b..d9eb586dfcdc 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/FederatedClientAuthMappingTest.java
+@@ -24,7 +24,7 @@
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+-@KeycloakIntegrationTest(config = ClientAuthIdpServerConfig.class)
++@KeycloakIntegrationTest
+ public class FederatedClientAuthMappingTest {
+ 
+     private static final String IDP_ALIAS = "external-idp";
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java
+index e7cb2f16abfe..6a487826e23a 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/KubernetesClientAuthTest.java
+@@ -4,7 +4,6 @@
+ 
+ import org.keycloak.authentication.authenticators.client.FederatedJWTClientAuthenticator;
+ import org.keycloak.broker.kubernetes.KubernetesIdentityProviderFactory;
+-import org.keycloak.common.Profile;
+ import org.keycloak.common.util.Time;
+ import org.keycloak.models.IdentityProviderModel;
+ import org.keycloak.representations.JsonWebToken;
+@@ -17,7 +16,6 @@
+ import org.keycloak.testframework.realm.ManagedRealm;
+ import org.keycloak.testframework.realm.RealmConfig;
+ import org.keycloak.testframework.realm.RealmConfigBuilder;
+-import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
+ import org.keycloak.testsuite.util.IdentityProviderBuilder;
+ 
+ import org.junit.jupiter.api.Assertions;
+@@ -25,7 +23,7 @@
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.TestMethodOrder;
+ 
+-@KeycloakIntegrationTest(config = KubernetesClientAuthTest.KubernetesServerConfig.class)
++@KeycloakIntegrationTest
+ @TestMethodOrder(MethodOrderer.MethodName.class)
+ public class KubernetesClientAuthTest extends AbstractBaseClientAuthTest {
+ 
+@@ -100,14 +98,6 @@ public ManagedRealm getRealm() {
+         return realm;
+     }
+ 
+-    public static class KubernetesServerConfig extends ClientAuthIdpServerConfig {
+-
+-        @Override
+-        public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
+-            return super.configure(config).features(Profile.Feature.KUBERNETES_SERVICE_ACCOUNTS);
+-        }
+-    }
+-
+     public static class ExernalClientAuthRealmConfig implements RealmConfig {
+ 
+         @Override
+diff --git a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java
+index 7fd5e81aac3d..774a2c8bcf2c 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java
++++ b/tests/base/src/test/java/org/keycloak/tests/client/authentication/external/SpiffeClientAuthTest.java
+@@ -18,6 +18,7 @@
+ import org.keycloak.testframework.realm.RealmConfigBuilder;
+ import org.keycloak.testframework.remote.timeoffset.InjectTimeOffSet;
+ import org.keycloak.testframework.remote.timeoffset.TimeOffSet;
++import org.keycloak.testframework.server.KeycloakServerConfig;
+ import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
+ import org.keycloak.testsuite.util.IdentityProviderBuilder;
+ 
+@@ -116,11 +117,11 @@ public ManagedRealm getRealm() {
+         return realm;
+     }
+ 
+-    public static class SpiffeServerConfig extends ClientAuthIdpServerConfig {
++    public static class SpiffeServerConfig implements KeycloakServerConfig {
+ 
+         @Override
+         public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
+-            return super.configure(config).features(Profile.Feature.SPIFFE);
++            return config.features(Profile.Feature.SPIFFE);
+         }
+     }
+ 

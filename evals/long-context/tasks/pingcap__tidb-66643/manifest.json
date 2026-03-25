@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "instance_id": "pingcap__tidb-66643",
+  "repo": {
+    "full_name": "pingcap/tidb",
+    "url": "https://github.com/pingcap/tidb",
+    "base_commit": "697da121016039875f32058a09a1c4b0dc934c49",
+    "primary_language": "Go",
+    "languages": [
+      "Go"
+    ]
+  },
+  "problem": {
+    "statement": "## Enhancement\nReading historical data with AS OF TIMESTAMP clause is a powerful TiDB feature. However, one unfortunately downside is that it doesn't support specifying TSO. It only allow specifying a timestamp, that has loss of precision, which limits its utility.\n\nIf one needs to read at exact TSO, the only option is to use tidb_snapshot that supports that supports providing both datetime as well as TSO. However, this is inconvenient since it pollutes the session, so it is hard to use in services that reuse connections between requests. \n\nExample with inline comments\n```\nUSE test;\nCREATE TABLE t1 ( value INT );\n\nINSERT INTO t1 VALUES (1);\n\n-- Capture the commit TSO\nSET @last_commit_ts = json_extract(@@tidb_last_txn_info, '$.commit_ts');\n\n-- Returns 0 instead of 1 due to loss of precision.\nSELECT COUNT(1) FROM t1 AS OF TIMESTAMP TIDB_PARSE_TSO(@last_commit_ts);\n-- Invalid \u2018Incorrect time value\u2019.\nSELECT COUNT(1) FROM t1 AS OF TIMESTAMP @last_commit_ts;\n\n-- The only way to read the exact TSO is to use tidb_snapshot system variable. However, since this can't be set by query hint. \nSET SESSION tidb_snapshot = @last_commit_ts;\nSELECT COUNT(1) FROM t1;\n```\n\nThere are multiple options of implementing this:\n1. Make `AS OF TIMESTAMP` work the same as tidb_snapshot when the passed timestamp is string. If the tidb_snpashot can be parsed as uint64, treat it as TSO, otherwise fallback to treating it as datetime. This is very straighforward change.\n\nThe only downside is that AS OF TIMESTAMP currently supports passing a timestamp in the format 'YYYYMMDDHHSS', e.g. '202511052348' tidb_snapshot would interpret this as TSO instead of datetime. However, current `AS OF TIMESTAMP` will parse it as datetime. While this is unlikely use case, it is technically a breaking change if someone passes timestamp in this format to TiDB already.\n\n2. Extend AS OF clause to allow `SELECT * AS OF TSO <tso>` to remove ambuigity.\n\n3. Allow passing tidb_snapshot via query hint so it can be set for individual query without polluting the session.\n\n4. Add a dedicated function like TIDB_BOUNDED_STALENESS, called TIDB_TSO(<tso>), that can be used as `SELECT * AS OF TIMESTAMP TIDB_TSO(<tso>)`.",
+    "source": "issue",
+    "source_url": "https://github.com/pingcap/tidb/issues/64314",
+    "source_id": 64314
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "pkg/sessiontxn/staleread/BUILD.bazel",
+      "pkg/sessiontxn/staleread/processor_test.go",
+      "pkg/sessiontxn/staleread/util.go",
+      "tests/integrationtest/r/executor/stale_txn.result",
+      "tests/integrationtest/t/executor/stale_txn.test"
+    ],
+    "affected_directories": [
+      "pkg/sessiontxn/staleread",
+      "tests/integrationtest/r/executor",
+      "tests/integrationtest/t/executor"
+    ],
+    "files_changed": 5,
+    "directories_changed": 3,
+    "insertions": 183,
+    "deletions": 1,
+    "test_files_changed": [
+      "pkg/sessiontxn/staleread/processor_test.go",
+      "tests/integrationtest/r/executor/stale_txn.result",
+      "tests/integrationtest/t/executor/stale_txn.test"
+    ],
+    "source_files_changed": [
+      "pkg/sessiontxn/staleread/BUILD.bazel",
+      "pkg/sessiontxn/staleread/util.go"
+    ]
+  },
+  "provenance": {
+    "pr_number": 66643,
+    "pr_url": "https://github.com/pingcap/tidb/pull/66643",
+    "pr_title": "staleread: Allow passing TSO in AS OF TIMESTAMP clause",
+    "pr_merged_at": "2026-03-25T09:55:28Z",
+    "issue_number": 64314,
+    "issue_url": "https://github.com/pingcap/tidb/issues/64314",
+    "issue_created_at": "2025-11-06T07:55:20Z",
+    "issue_labels": [
+      "type/enhancement",
+      "contribution",
+      "sig/execution",
+      "sig/transaction",
+      "type/feature-request",
+      "first-time-contributor"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 5,
+    "directories_changed": 3,
+    "cross_package": false,
+    "insertions": 183,
+    "deletions": 1,
+    "dependency_depth": 2,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 20.9
+  },
+  "contamination": {
+    "issue_created_at": "2025-11-06T07:55:20Z",
+    "pr_merged_at": "2026-03-25T09:55:28Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "go",
+    "runtime_version": "1.22",
+    "package_manager": "go",
+    "install_command": "go mod download",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "go test ./...",
+    "fail_to_pass": [
+      "pkg/sessiontxn/staleread/processor_test.go",
+      "tests/integrationtest/r/executor/stale_txn.result",
+      "tests/integrationtest/t/executor/stale_txn.test"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "pkg/sessiontxn/staleread/BUILD.bazel",
+      "pkg/sessiontxn/staleread/processor_test.go",
+      "pkg/sessiontxn/staleread/util.go",
+      "tests/integrationtest/r/executor/stale_txn.result",
+      "tests/integrationtest/t/executor/stale_txn.test"
+    ],
+    "dependency_chain": [
+      "pkg/sessiontxn/staleread/BUILD.bazel",
+      "pkg/sessiontxn/staleread/util.go"
+    ],
+    "min_context_tokens": 10000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

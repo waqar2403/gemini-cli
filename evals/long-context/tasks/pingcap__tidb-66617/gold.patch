@@ -1,0 +1,2531 @@
+From b158fffda2457b0c50a2512815bc400112815be2 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Tue, 3 Mar 2026 16:26:05 +0800
+Subject: [PATCH 01/11] support logging session connect attrs to slow query log
+
+---
+ pkg/executor/adapter_slow_log.go              |   3 +
+ pkg/executor/slow_query.go                    |  15 +
+ pkg/executor/slow_query_sql_test.go           |  51 ++++
+ pkg/executor/slow_query_test.go               |  60 +++-
+ pkg/infoschema/tables.go                      |   1 +
+ pkg/server/conn_test.go                       | 284 ++++++++++++++++++
+ pkg/server/internal/parse/parse.go            | 119 +++++++-
+ pkg/sessionctx/vardef/sysvar.go               |   2 +
+ pkg/sessionctx/vardef/tidb_vars.go            |  11 +
+ pkg/sessionctx/variable/noop.go               |   1 -
+ pkg/sessionctx/variable/slow_log.go           |  16 +
+ pkg/sessionctx/variable/statusvar.go          |   6 +
+ pkg/sessionctx/variable/sysvar.go             |  10 +
+ pkg/sessionctx/variable/tests/session_test.go |  25 ++
+ 14 files changed, 592 insertions(+), 12 deletions(-)
+
+diff --git a/pkg/executor/adapter_slow_log.go b/pkg/executor/adapter_slow_log.go
+index 82d91fda8b54d..50647d048cc75 100644
+--- a/pkg/executor/adapter_slow_log.go
++++ b/pkg/executor/adapter_slow_log.go
+@@ -270,6 +270,9 @@ func SetSlowLogItems(a *ExecStmt, txnTS uint64, hasMoreResults bool, items *vari
+ 	items.StorageKV = stmtCtx.IsTiKV.Load()
+ 	items.StorageMPP = stmtCtx.IsTiFlash.Load()
+ 	items.MemArbitration = stmtCtx.MemTracker.MemArbitration().Seconds()
++	if sessVars.ConnectionInfo != nil && len(sessVars.ConnectionInfo.Attributes) > 0 {
++		items.SessionConnectAttrs = sessVars.ConnectionInfo.Attributes
++	}
+ 
+ 	if a.retryCount > 0 {
+ 		items.ExecRetryTime = items.TimeTotal - sessVars.DurationParse - sessVars.DurationCompile - time.Since(a.retryStartTime)
+diff --git a/pkg/executor/slow_query.go b/pkg/executor/slow_query.go
+index 61f85c3b72a4c..e7da8b1769189 100644
+--- a/pkg/executor/slow_query.go
++++ b/pkg/executor/slow_query.go
+@@ -982,6 +982,9 @@ func (e *slowQueryRetriever) parseLog(ctx context.Context, sctx sessionctx.Conte
+ 				} else if strings.HasPrefix(line, variable.SlowLogWarnings+variable.SlowLogSpaceMarkStr) {
+ 					line = line[len(variable.SlowLogWarnings+variable.SlowLogSpaceMarkStr):]
+ 					valid = e.setColumnValue(sctx, row, tz, variable.SlowLogWarnings, line, e.checker, fileLine)
++				} else if strings.HasPrefix(line, variable.SlowLogSessionConnectAttrs+variable.SlowLogSpaceMarkStr) {
++					line = line[len(variable.SlowLogSessionConnectAttrs+variable.SlowLogSpaceMarkStr):]
++					valid = e.setColumnValue(sctx, row, tz, variable.SlowLogSessionConnectAttrs, line, e.checker, fileLine)
+ 				} else if strings.HasPrefix(line, variable.SlowLogDBStr+variable.SlowLogSpaceMarkStr) {
+ 					line = line[len(variable.SlowLogDBStr+variable.SlowLogSpaceMarkStr):]
+ 					valid = e.setColumnValue(sctx, row, tz, variable.SlowLogDBStr, line, e.checker, fileLine)
+@@ -1170,6 +1173,18 @@ func getColumnValueFactoryByName(colName string, columnIdx int) (slowQueryColumn
+ 			row[columnIdx] = types.NewDatum(v)
+ 			return true, nil
+ 		}, nil
++	case variable.SlowLogSessionConnectAttrs:
++		return func(row []types.Datum, value string, _ *time.Location, _ *slowLogChecker) (valid bool, err error) {
++			if len(value) == 0 {
++				return true, nil
++			}
++			bj, err := types.ParseBinaryJSONFromString(value)
++			if err != nil {
++				return false, err
++			}
++			row[columnIdx] = types.NewDatum(bj)
++			return true, nil
++		}, nil
+ 	}
+ 	return nil, nil
+ }
+diff --git a/pkg/executor/slow_query_sql_test.go b/pkg/executor/slow_query_sql_test.go
+index 7619e5ebf9a8b..b2d14f93334f5 100644
+--- a/pkg/executor/slow_query_sql_test.go
++++ b/pkg/executor/slow_query_sql_test.go
+@@ -544,3 +544,54 @@ func TestStorageEnginesInSlowQuery(t *testing.T) {
+ 		"where query like 'select%tablesample%;'").
+ 		Check(testkit.Rows("1 0"))
+ }
++
++func TestSessionConnectAttrsInSlowQuery(t *testing.T) {
++	originCfg := config.GetGlobalConfig()
++	newCfg := *originCfg
++	f, err := os.CreateTemp("", "tidb-slow-*.log")
++	require.NoError(t, err)
++	_, err = f.WriteString(`# Time: 2024-01-15T10:00:00.000000+08:00
++# Txn_start_ts: 123456789
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.5
++# Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
++# Is_internal: false
++# Succ: true
++# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++select * from t;
++`)
++	require.NoError(t, err)
++	require.NoError(t, f.Close())
++	newCfg.Log.SlowQueryFile = f.Name()
++	config.StoreGlobalConfig(&newCfg)
++	defer func() {
++		config.StoreGlobalConfig(originCfg)
++		require.NoError(t, os.Remove(newCfg.Log.SlowQueryFile))
++	}()
++	require.NoError(t, logutil.InitLogger(newCfg.Log.ToLogConfig()))
++	store := testkit.CreateMockStore(t)
++	tk := testkit.NewTestKit(t, store)
++
++	tk.MustExec("set @@time_zone='+08:00'")
++	tk.MustExec(fmt.Sprintf("set @@tidb_slow_query_file='%v'", f.Name()))
++
++	// Verify Session_connect_attrs column is present and returns the correct JSON value.
++	rows := tk.MustQuery("select Session_connect_attrs from information_schema.slow_query " +
++		"where query = 'select * from t;'").Rows()
++	require.Len(t, rows, 1)
++	attrsStr := rows[0][0].(string)
++	require.Contains(t, attrsStr, `"_client_name"`)
++	require.Contains(t, attrsStr, `"Go-MySQL-Driver"`)
++	require.Contains(t, attrsStr, `"_os"`)
++	require.Contains(t, attrsStr, `"linux"`)
++	require.Contains(t, attrsStr, `"app_name"`)
++	require.Contains(t, attrsStr, `"test_app"`)
++
++	// Verify individual keys are accessible via JSON_EXTRACT.
++	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$._client_name') from information_schema.slow_query " +
++		"where query = 'select * from t;'").
++		Check(testkit.Rows(`"Go-MySQL-Driver"`))
++	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$.app_name') from information_schema.slow_query " +
++		"where query = 'select * from t;'").
++		Check(testkit.Rows(`"test_app"`))
++}
+diff --git a/pkg/executor/slow_query_test.go b/pkg/executor/slow_query_test.go
+index 1fdcdaba8aacf..092b8c73fe2e4 100644
+--- a/pkg/executor/slow_query_test.go
++++ b/pkg/executor/slow_query_test.go
+@@ -191,7 +191,7 @@ select * from t;`
+ 		`0.1,0.2,0.03,127.0.0.1:20160,0.05,0.6,0.8,0.0.0.0:20160,70724,23333,65536,0,0,0,30000,3000,10000,1000,500000,500005,300000,300005,0,0,,` +
+ 		`Cop_backoff_regionMiss_total_times: 200 Cop_backoff_regionMiss_total_time: 0.2 Cop_backoff_regionMiss_max_time: 0.2 Cop_backoff_regionMiss_max_addr: 127.0.0.1 Cop_backoff_regionMiss_avg_time: 0.2 Cop_backoff_regionMiss_p90_time: 0.2 Cop_backoff_rpcPD_total_times: 200 Cop_backoff_rpcPD_total_time: 0.2 Cop_backoff_rpcPD_max_time: 0.2 Cop_backoff_rpcPD_max_addr: 127.0.0.1 Cop_backoff_rpcPD_avg_time: 0.2 Cop_backoff_rpcPD_p90_time: 0.2 Cop_backoff_rpcTiKV_total_times: 200 Cop_backoff_rpcTiKV_total_time: 0.2 Cop_backoff_rpcTiKV_max_time: 0.2 Cop_backoff_rpcTiKV_max_addr: 127.0.0.1 Cop_backoff_rpcTiKV_avg_time: 0.2 Cop_backoff_rpcTiKV_p90_time: 0.2,` +
+ 		`0,0,1,0,1,1,0,default,2.158,2.123,0.05,0.01,0.021,1,1,,,60e9378c746d9a2be1c791047e008967cf252eb6de9167ad3aa6098fa2d523f4,` +
+-		`,update t set i = 1;,select * from t;`
++		`,update t set i = 1;,null,select * from t;`
+ 	require.Equal(t, expectRecordString, recordString)
+ 
+ 	// Issue 20928
+@@ -214,7 +214,7 @@ select * from t;`
+ 		`0.1,0.2,0.03,127.0.0.1:20160,0.05,0.6,0.8,0.0.0.0:20160,70724,23333,65536,0,0,0,30000,3000,10000,1000,500000,500005,300000,300005,0,0,,` +
+ 		`Cop_backoff_regionMiss_total_times: 200 Cop_backoff_regionMiss_total_time: 0.2 Cop_backoff_regionMiss_max_time: 0.2 Cop_backoff_regionMiss_max_addr: 127.0.0.1 Cop_backoff_regionMiss_avg_time: 0.2 Cop_backoff_regionMiss_p90_time: 0.2 Cop_backoff_rpcPD_total_times: 200 Cop_backoff_rpcPD_total_time: 0.2 Cop_backoff_rpcPD_max_time: 0.2 Cop_backoff_rpcPD_max_addr: 127.0.0.1 Cop_backoff_rpcPD_avg_time: 0.2 Cop_backoff_rpcPD_p90_time: 0.2 Cop_backoff_rpcTiKV_total_times: 200 Cop_backoff_rpcTiKV_total_time: 0.2 Cop_backoff_rpcTiKV_max_time: 0.2 Cop_backoff_rpcTiKV_max_addr: 127.0.0.1 Cop_backoff_rpcTiKV_avg_time: 0.2 Cop_backoff_rpcTiKV_p90_time: 0.2,` +
+ 		`0,0,1,0,1,1,0,default,2.158,2.123,0.05,0.01,0.021,1,1,,,60e9378c746d9a2be1c791047e008967cf252eb6de9167ad3aa6098fa2d523f4,` +
+-		`,update t set i = 1;,select * from t;`
++		`,update t set i = 1;,null,select * from t;`
+ 	require.Equal(t, expectRecordString, recordString)
+ 
+ 	// fix sql contain '# ' bug
+@@ -284,6 +284,62 @@ select * from t;
+ 	require.Equal(t, value, "[t:i: a]")
+ }
+ 
++func TestParseSlowLogSessionConnectAttrs(t *testing.T) {
++	// Slow log entry that includes Session_connect_attrs JSON.
++	slowLogStr := `# Time: 2019-04-28T15:24:04.309074+08:00
++# Txn_start_ts: 405888132465033227
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.216905
++# Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
++# Is_internal: false
++# Succ: true
++# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++# Prev_stmt: begin;
++select * from t;
++`
++	loc, err := time.LoadLocation("Asia/Shanghai")
++	require.NoError(t, err)
++	ctx := mock.NewContext()
++	ctx.ResetSessionAndStmtTimeZone(loc)
++
++	// Use the retriever directly (without initialize) to avoid reading
++	// from actual slow log files on disk, which can produce extra rows.
++	retriever, err := newSlowQueryRetriever()
++	require.NoError(t, err)
++	retriever.columnValueFactoryMap = make(map[string]slowQueryColumnValueFactory, len(retriever.outputCols))
++	for idx, col := range retriever.outputCols {
++		factory, err := getColumnValueFactoryByName(col.Name.O, idx)
++		require.NoError(t, err)
++		require.NotNil(t, factory, "column %s should have a factory", col.Name.O)
++		retriever.columnValueFactoryMap[col.Name.O] = factory
++	}
++
++	reader := bufio.NewReader(bytes.NewBufferString(slowLogStr))
++	rows, err := parseLog(retriever, ctx, reader)
++	require.NoError(t, err)
++	require.Len(t, rows, 1)
++
++	// Find the Session_connect_attrs column.
++	colIdx := -1
++	for i, col := range retriever.outputCols {
++		if col.Name.L == strings.ToLower(variable.SlowLogSessionConnectAttrs) {
++			colIdx = i
++			break
++		}
++	}
++	require.NotEqual(t, -1, colIdx, "Session_connect_attrs column should exist")
++
++	// Verify the parsed JSON contains the expected keys.
++	bj := rows[0][colIdx].GetMysqlJSON()
++	bjStr := bj.String()
++	require.Contains(t, bjStr, `"_client_name"`)
++	require.Contains(t, bjStr, `"Go-MySQL-Driver"`)
++	require.Contains(t, bjStr, `"_os"`)
++	require.Contains(t, bjStr, `"linux"`)
++	require.Contains(t, bjStr, `"app_name"`)
++	require.Contains(t, bjStr, `"test_app"`)
++}
++
+ // It changes variable.MaxOfMaxAllowedPacket, so must be stayed in SerialSuite.
+ func TestParseSlowLogFileSerial(t *testing.T) {
+ 	loc, err := time.LoadLocation("Asia/Shanghai")
+diff --git a/pkg/infoschema/tables.go b/pkg/infoschema/tables.go
+index 7b7df816cb71a..2f3ffeac66f26 100644
+--- a/pkg/infoschema/tables.go
++++ b/pkg/infoschema/tables.go
+@@ -984,6 +984,7 @@ var slowQueryCols = []columnInfo{
+ 	{name: variable.SlowLogPlanDigest, tp: mysql.TypeVarchar, size: 128},
+ 	{name: variable.SlowLogBinaryPlan, tp: mysql.TypeLongBlob, size: types.UnspecifiedLength},
+ 	{name: variable.SlowLogPrevStmt, tp: mysql.TypeLongBlob, size: types.UnspecifiedLength},
++	{name: variable.SlowLogSessionConnectAttrs, tp: mysql.TypeJSON, size: types.UnspecifiedLength},
+ 	{name: variable.SlowLogQuerySQLStr, tp: mysql.TypeLongBlob, size: types.UnspecifiedLength},
+ }
+ 
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index d276769a12941..65a288296ee4f 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -2283,3 +2283,287 @@ func TestIssue54335(t *testing.T) {
+ 		_ = cc.handleQuery(context.Background(), "select /*+ MAX_EXECUTION_TIME(1)*/  * FROM testTable2;")
+ 	}
+ }
++
++func TestParseHandshakeAttrsTruncation(t *testing.T) {
++	// Save and restore global atomic counters.
++	origSize := vardef.ConnectAttrsSize.Load()
++	origLongest := vardef.ConnectAttrsLongestSeen.Load()
++	origLost := vardef.ConnectAttrsLost.Load()
++	defer func() {
++		vardef.ConnectAttrsSize.Store(origSize)
++		vardef.ConnectAttrsLongestSeen.Store(origLongest)
++		vardef.ConnectAttrsLost.Store(origLost)
++	}()
++
++	t.Run("exceeds limit truncation", func(t *testing.T) {
++		vardef.ConnectAttrsSize.Store(5) // very small limit
++		vardef.ConnectAttrsLongestSeen.Store(0)
++		vardef.ConnectAttrsLost.Store(0)
++
++		// Construct payload
++		// Capability: ClientProtocol41 | ClientConnectAtts
++		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++
++		var buf bytes.Buffer
++		// Header (32 bytes)
++		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0)) // MaxPacketSize
++		buf.WriteByte(0)                                   // Collation
++		buf.Write(make([]byte, 23))                        // Reserved
++
++		// Body
++		buf.WriteString("root")
++		buf.WriteByte(0) // User null-term
++
++		buf.WriteByte(0) // Auth null-term
++
++		// Attrs: "ab":"cd" (4), "ef":"gh" (4). Total = 8. Limit = 5.
++		attrsBuf := bytes.NewBuffer(nil)
++		// K1
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ab")
++		// V1
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("cd")
++		// K2
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ef")
++		// V2
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("gh")
++
++		attrsBytes := attrsBuf.Bytes()
++		buf.WriteByte(byte(len(attrsBytes))) // 12 bytes total length (includes len enc overhead or just payload?)
++		// ParseLengthEncodedInt parses the integer. It returns the integer value.
++		// HandshakeResponseBody uses this value as the length of the *bytes* to consume for attributes.
++		// The bytes consumed are then passed to parseAttrs.
++		// parseAttrs expects `[len][str][len][str]`.
++		// So `attrsBytes` is correct.
++		buf.Write(attrsBytes)
++
++		data := buf.Bytes()
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// Check truncation
++		require.Len(t, p.Attrs, 2)
++		require.Equal(t, "cd", p.Attrs["ab"])
++		val, ok := p.Attrs["_truncated"]
++		require.True(t, ok)
++		require.Equal(t, "4", val)
++
++		require.Equal(t, int64(1), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(8), vardef.ConnectAttrsLongestSeen.Load()) // 4+4=8
++	})
++
++	t.Run("limit 1MiB rejection", func(t *testing.T) {
++		// Construct payload declaring > 1 MiB of attributes.
++		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++
++		var buf bytes.Buffer
++		// Header (32 bytes)
++		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		// Body
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		// Encode a length-encoded integer of 1<<20 + 1 (1 MiB + 1 byte).
++		// 0xfd prefix = 3-byte little-endian integer (range 65536–16777215).
++		// 1048577 = 0x100001 → LE bytes: 0x01, 0x00, 0x10.
++		buf.WriteByte(0xfd)
++		buf.WriteByte(0x01)
++		buf.WriteByte(0x00)
++		buf.WriteByte(0x10)
++
++		// The 1 MiB check fires before the bounds-check on
++		// data[offset : offset+num], so no panic is expected.
++
++		data := buf.Bytes()
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "connection refused: session connection attributes exceed the 1 MiB hard limit")
++	})
++
++	t.Run("no limit", func(t *testing.T) {
++		vardef.ConnectAttrsSize.Store(-1) // -1 means no limit up to 64KB
++		vardef.ConnectAttrsLongestSeen.Store(0)
++		vardef.ConnectAttrsLost.Store(0)
++
++		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++
++		var buf bytes.Buffer
++		// Header (32 bytes)
++		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		// Body
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		// Attrs: "ab":"cd", "ef":"gh". Total = 8.
++		attrsBuf := bytes.NewBuffer(nil)
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ab")
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("cd")
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ef")
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("gh")
++
++		attrsBytes := attrsBuf.Bytes()
++		buf.WriteByte(byte(len(attrsBytes)))
++		buf.Write(attrsBytes)
++
++		data := buf.Bytes()
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// All attrs should be accepted, no truncation.
++		require.Len(t, p.Attrs, 2)
++		require.Equal(t, "cd", p.Attrs["ab"])
++		require.Equal(t, "gh", p.Attrs["ef"])
++		_, hasTruncated := p.Attrs["_truncated"]
++		require.False(t, hasTruncated)
++
++		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(8), vardef.ConnectAttrsLongestSeen.Load())
++	})
++
++	t.Run("longest_seen not updated for large payloads", func(t *testing.T) {
++		// Attrs >= 64KB should NOT update LongestSeen.
++		vardef.ConnectAttrsSize.Store(-1) // Limit mapped to 65536 max internally
++		vardef.ConnectAttrsLongestSeen.Store(100)
++		vardef.ConnectAttrsLost.Store(0)
++
++		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++
++		var buf bytes.Buffer
++		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		// Build attrs: one key "k" with a 70000-byte value (total > 64KB).
++		attrsBuf := bytes.NewBuffer(nil)
++		attrsBuf.WriteByte(1) // key length = 1
++		attrsBuf.WriteByte('k')
++		// value length = 70000 → needs 3-byte length-encoded int: 0xfd + 3 LE bytes
++		valLen := 70000
++		attrsBuf.WriteByte(0xfd)
++		attrsBuf.WriteByte(byte(valLen))
++		attrsBuf.WriteByte(byte(valLen >> 8))
++		attrsBuf.WriteByte(byte(valLen >> 16))
++		attrsBuf.Write(make([]byte, valLen)) // value payload
++
++		attrsBytes := attrsBuf.Bytes()
++		// Encode overall attrs length as 3-byte length-encoded int.
++		attrsLen := len(attrsBytes)
++		buf.WriteByte(0xfd)
++		buf.WriteByte(byte(attrsLen))
++		buf.WriteByte(byte(attrsLen >> 8))
++		buf.WriteByte(byte(attrsLen >> 16))
++		buf.Write(attrsBytes)
++
++		data := buf.Bytes()
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// Attrs are truncated (totalSize=70001 > effectiveLimit=65536, because
++		// limit=-1 maps to effectiveLimit=65536 internally), but LongestSeen
++		// should NOT be updated because totalSize >= 64KB.
++		require.Equal(t, int64(100), vardef.ConnectAttrsLongestSeen.Load(),
++			"LongestSeen should not be updated for payloads >= 64KB")
++	})
++
++	t.Run("underscore-prefixed attr whitelist", func(t *testing.T) {
++		// Only standard connector attributes (_client_name, _os, etc.) whose
++		// names start with "_" are accepted. Unknown "_"-prefixed keys sent by
++		// a client (including "_truncated" and arbitrary custom ones) are dropped.
++		vardef.ConnectAttrsSize.Store(-1) // Limit mapped to 65536 max internally
++		vardef.ConnectAttrsLongestSeen.Store(0)
++		vardef.ConnectAttrsLost.Store(0)
++
++		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++
++		var buf bytes.Buffer
++		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		// Attrs:
++		//   "_client_name":"Go-MySQL-Driver"  → standard, must be kept
++		//   "_os":"linux"                     → standard, must be kept
++		//   "_truncated":"fake"               → server-reserved, must be dropped
++		//   "_custom":"val"                   → unknown underscore key, must be dropped
++		//   "app_name":"myapp"                → user-defined (no underscore), must be kept
++		attrsBuf := bytes.NewBuffer(nil)
++		for _, kv := range [][2]string{
++			{"_client_name", "Go-MySQL-Driver"},
++			{"_os", "linux"},
++			{"_truncated", "fake"},
++			{"_custom", "val"},
++			{"app_name", "myapp"},
++		} {
++			attrsBuf.WriteByte(byte(len(kv[0])))
++			attrsBuf.WriteString(kv[0])
++			attrsBuf.WriteByte(byte(len(kv[1])))
++			attrsBuf.WriteString(kv[1])
++		}
++
++		attrsBytes := attrsBuf.Bytes()
++		buf.WriteByte(byte(len(attrsBytes)))
++		buf.Write(attrsBytes)
++
++		data := buf.Bytes()
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// Standard connector attrs and plain user attrs are kept.
++		require.Len(t, p.Attrs, 3)
++		require.Equal(t, "Go-MySQL-Driver", p.Attrs["_client_name"])
++		require.Equal(t, "linux", p.Attrs["_os"])
++		require.Equal(t, "myapp", p.Attrs["app_name"])
++		// Non-standard underscore keys must be absent.
++		_, hasTruncated := p.Attrs["_truncated"]
++		require.False(t, hasTruncated, "_truncated sent by client must be dropped")
++		_, hasCustom := p.Attrs["_custom"]
++		require.False(t, hasCustom, "unknown _-prefixed key sent by client must be dropped")
++
++		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
++	})
++}
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index 80f95e9c028d7..273238d4e0656 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -18,10 +18,14 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"encoding/binary"
++	"fmt"
++	"strconv"
+ 
++	"github.com/pingcap/errors"
+ 	"github.com/pingcap/tidb/pkg/parser/mysql"
+ 	"github.com/pingcap/tidb/pkg/server/internal/handshake"
+ 	util2 "github.com/pingcap/tidb/pkg/server/internal/util"
++	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
+ 	"github.com/pingcap/tidb/pkg/util/logutil"
+ 	"go.uber.org/zap"
+ )
+@@ -128,14 +132,29 @@ func HandshakeResponseBody(ctx context.Context, packet *handshake.Response41, da
+ 			// Defend some ill-formated packet, connection attribute is not important and can be ignored.
+ 			return nil
+ 		}
+-		if num, null, intOff := util2.ParseLengthEncodedInt(data[offset:]); !null {
+-			offset += intOff // Length of variable length encoded integer itself in bytes
+-			row := data[offset : offset+int(num)]
+-			attrs, err := parseAttrs(row)
++		num, null, intOff := util2.ParseLengthEncodedInt(data[offset:])
++		offset += intOff // Length of variable length encoded integer itself in bytes
++		if !null {
++			if num > 1<<20 { // 1 MiB hard limit
++				return errors.New("connection refused: session connection attributes exceed the 1 MiB hard limit")
++			}
++			end := offset + int(num)
++			if end > len(data) {
++				logutil.Logger(ctx).Error("malformed connection attributes packet",
++					zap.Int("offset", offset),
++					zap.Uint64("attrLength", num),
++					zap.Int("dataLen", len(data)))
++				return mysql.ErrMalformPacket
++			}
++			row := data[offset:end]
++			attrs, warning, err := parseAttrs(row)
+ 			if err != nil {
+ 				logutil.Logger(ctx).Warn("parse attrs failed", zap.Error(err))
+ 				return nil
+ 			}
++			if warning != "" {
++				logutil.Logger(ctx).Debug(warning)
++			}
+ 			packet.Attrs = attrs
+ 			offset += int(num) // Length of attributes
+ 		}
+@@ -148,22 +167,104 @@ func HandshakeResponseBody(ctx context.Context, packet *handshake.Response41, da
+ 	return nil
+ }
+ 
+-func parseAttrs(data []byte) (map[string]string, error) {
++// standardConnectorAttrs is the set of underscore-prefixed attribute names
++// defined by the MySQL connector specification. Only these are accepted from
++// clients; any other "_"-prefixed key (including "_truncated", which is
++// written by the server) is silently dropped to prevent name collisions.
++var standardConnectorAttrs = map[string]struct{}{
++	"_client_name":    {},
++	"_client_version": {},
++	"_os":             {},
++	"_pid":            {},
++	"_platform":       {},
++	"_source_host":    {},
++	"_client_license": {},
++}
++
++func parseAttrs(data []byte) (map[string]string, string, error) {
+ 	attrs := make(map[string]string)
+ 	pos := 0
++	var totalSize int64
++	var acceptedSize int64
++	truncated := false
++	limit := vardef.ConnectAttrsSize.Load()
++
+ 	for pos < len(data) {
+ 		key, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+ 		if err != nil {
+-			return attrs, err
++			return attrs, "", err
+ 		}
+ 		pos += off
+ 		value, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+ 		if err != nil {
+-			return attrs, err
++			return attrs, "", err
+ 		}
+ 		pos += off
+ 
+-		attrs[string(key)] = string(value)
++		// Accept only known standard connector attributes whose names start with
++		// "_". Unknown underscore-prefixed keys (including "_truncated", which is
++		// written by the server after parsing) are silently dropped.
++		// Note: the whitelist check happens before totalSize is updated, so
++		// filtered-out bytes do not count toward the size limit or LongestSeen.
++		if len(key) > 0 && key[0] == '_' {
++			if _, ok := standardConnectorAttrs[string(key)]; !ok {
++				continue
++			}
++		}
++
++		kvSize := int64(len(key)) + int64(len(value))
++		totalSize += kvSize
++
++		// In MySQL, -1 means autosizing. We map it to a maximum of 64KB (65536)
++		// to prevent unconstrained slow log bloating. 0 means disabled.
++		effectiveLimit := limit
++		if effectiveLimit < 0 {
++			effectiveLimit = 65536
++		}
++
++		if totalSize > effectiveLimit {
++			if !truncated {
++				truncated = true
++				vardef.ConnectAttrsLost.Add(1)
++			}
++			continue
++		}
++
++		if !truncated {
++			attrs[string(key)] = string(value)
++			acceptedSize += kvSize
++		}
++	}
++
++	// Update LongestSeen only for normal-sized payloads (< 64 KiB).
++	// Abnormally large payloads are still accepted (up to 1 MiB) but should
++	// not skew this monitoring metric.
++	if totalSize < 65536 {
++		for {
++			old := vardef.ConnectAttrsLongestSeen.Load()
++			if totalSize <= old {
++				break
++			}
++			if vardef.ConnectAttrsLongestSeen.CompareAndSwap(old, totalSize) {
++				break
++			}
++		}
++	}
++
++	var warning string
++	if truncated {
++		// Calculate what limit was actually enforced
++		effectiveLimit := limit
++		if effectiveLimit < 0 {
++			effectiveLimit = 65536
++		}
++
++		truncatedBytes := totalSize - acceptedSize
++		attrs["_truncated"] = strconv.FormatInt(truncatedBytes, 10)
++		warning = fmt.Sprintf(
++			"session connection attributes truncated: total size %d bytes exceeds "+
++				"performance_schema_session_connect_attrs_size (%d), %d bytes were discarded",
++			totalSize, effectiveLimit, truncatedBytes)
+ 	}
+-	return attrs, nil
++	return attrs, warning, nil
+ }
+diff --git a/pkg/sessionctx/vardef/sysvar.go b/pkg/sessionctx/vardef/sysvar.go
+index 633dd03771860..e08c413df4fd1 100644
+--- a/pkg/sessionctx/vardef/sysvar.go
++++ b/pkg/sessionctx/vardef/sysvar.go
+@@ -212,6 +212,8 @@ const (
+ 	LocalInFile = "local_infile"
+ 	// PerformanceSchema is the name for 'performance_schema' system variable.
+ 	PerformanceSchema = "performance_schema"
++	// PerfSchemaSessionConnectAttrsSize is the name for 'performance_schema_session_connect_attrs_size' system variable.
++	PerfSchemaSessionConnectAttrsSize = "performance_schema_session_connect_attrs_size"
+ 	// Flush is the name for 'flush' system variable.
+ 	Flush = "flush"
+ 	// SlaveAllowBatching is the name for 'slave_allow_batching' system variable.
+diff --git a/pkg/sessionctx/vardef/tidb_vars.go b/pkg/sessionctx/vardef/tidb_vars.go
+index 478b27f0d6e99..a043652f35288 100644
+--- a/pkg/sessionctx/vardef/tidb_vars.go
++++ b/pkg/sessionctx/vardef/tidb_vars.go
+@@ -1776,6 +1776,9 @@ const (
+ 	DefTiDBMemArbitratorQueryReservedText             = "0"
+ 	DefTiDBMemArbitratorWaitAverse                    = "0"
+ 	DefTiDBIndexLookUpPushDownPolicy                  = IndexLookUpPushDownPolicyHintOnly
++	// DefConnectAttrsSize is the default max aggregate byte size of connection attributes per connection.
++	// This corresponds to performance_schema_session_connect_attrs_size. In TiDB, -1 means no limit up to 64KB.
++	DefConnectAttrsSize int64 = 4096
+ )
+ 
+ // Process global variables.
+@@ -1911,6 +1914,14 @@ var (
+ 
+ 	AdvancerCheckPointLagLimit = atomic.NewDuration(DefTiDBAdvancerCheckPointLagLimit)
+ 	EnableBindingUsage         = atomic.NewBool(DefTiDBEnableBindingUsage)
++
++	// ConnectAttrsSize is the max aggregate byte size of connection attributes allowed per connection.
++	// Corresponds to performance_schema_session_connect_attrs_size. Default 4096.
++	ConnectAttrsSize = atomic.NewInt64(DefConnectAttrsSize)
++	// ConnectAttrsLongestSeen tracks the largest connection attribute aggregate size seen so far.
++	ConnectAttrsLongestSeen = atomic.NewInt64(0)
++	// ConnectAttrsLost counts the number of connections whose attributes were truncated.
++	ConnectAttrsLost = atomic.NewInt64(0)
+ )
+ 
+ func serverMemoryLimitDefaultValue() string {
+diff --git a/pkg/sessionctx/variable/noop.go b/pkg/sessionctx/variable/noop.go
+index 9cb45ebcece35..9466e014911fd 100644
+--- a/pkg/sessionctx/variable/noop.go
++++ b/pkg/sessionctx/variable/noop.go
+@@ -128,7 +128,6 @@ var noopSysVars = []*SysVar{
+ 	{Scope: vardef.ScopeGlobal, Name: vardef.BinlogOrderCommits, Value: vardef.On, Type: vardef.TypeBool},
+ 	{Scope: vardef.ScopeGlobal, Name: "key_cache_division_limit", Value: "100"},
+ 	{Scope: vardef.ScopeGlobal | vardef.ScopeSession, Name: "max_insert_delayed_threads", Value: "20"},
+-	{Scope: vardef.ScopeNone, Name: "performance_schema_session_connect_attrs_size", Value: "512"},
+ 	{Scope: vardef.ScopeGlobal, Name: "innodb_max_dirty_pages_pct", Value: "75"},
+ 	{Scope: vardef.ScopeGlobal, Name: vardef.InnodbFilePerTable, Value: vardef.On, Type: vardef.TypeBool, AutoConvertNegativeBool: true},
+ 	{Scope: vardef.ScopeGlobal, Name: vardef.InnodbLogCompressedPages, Value: "1"},
+diff --git a/pkg/sessionctx/variable/slow_log.go b/pkg/sessionctx/variable/slow_log.go
+index e4ad38256c7f3..c2ad377e35343 100644
+--- a/pkg/sessionctx/variable/slow_log.go
++++ b/pkg/sessionctx/variable/slow_log.go
+@@ -223,6 +223,8 @@ const (
+ 	SlowLogResourceGroup = "Resource_group"
+ 	// SlowLogCopMVCCReadAmplification is total_keys / processed_keys in coprocessor scan detail.
+ 	SlowLogCopMVCCReadAmplification = "cop_mvcc_read_amplification"
++	// SlowLogSessionConnectAttrs is the session connection attributes from the client.
++	SlowLogSessionConnectAttrs = "Session_connect_attrs"
+ )
+ 
+ // JSONSQLWarnForSlowLog helps to print the SQLWarn through the slow log in JSON format.
+@@ -306,6 +308,9 @@ type SlowQueryLogItems struct {
+ 	StorageKV         bool // query read from TiKV
+ 	StorageMPP        bool // query read from TiFlash
+ 	MemArbitration    float64
++	// SessionConnectAttrs holds the client connection attributes (e.g. _client_name, _os).
++	// This is a shared reference to ConnectionInfo.Attributes and must not be modified.
++	SessionConnectAttrs map[string]string
+ }
+ 
+ const zeroStr = "0"
+@@ -563,6 +568,17 @@ func (s *SessionVars) SlowLogFormat(logItems *SlowQueryLogItems) string {
+ 	if formatted := execdetails.FormatRUV2Metrics(logItems.RUV2Metrics, s.RUV2Weights(), tiKVRU, tiFlashRU); len(formatted) > 0 {
+ 		writeSlowLogItem(&buf, SlowLogRUV2Metrics, formatted)
+ 	}
++	if len(logItems.SessionConnectAttrs) > 0 {
++		// Encode into a temporary buffer first so that a (practically impossible)
++		// encoding error does not leave a partial line in the main buffer.
++		var attrsBuf bytes.Buffer
++		encoder := json.NewEncoder(&attrsBuf)
++		encoder.SetEscapeHTML(false)
++		if err := encoder.Encode(logItems.SessionConnectAttrs); err == nil {
++			buf.WriteString(SlowLogRowPrefixStr + SlowLogSessionConnectAttrs + SlowLogSpaceMarkStr)
++			buf.Write(attrsBuf.Bytes()) // Encode already appends \n
++		}
++	}
+ 	if logItems.PrevStmt != "" {
+ 		writeSlowLogItem(&buf, SlowLogPrevStmt, logItems.PrevStmt)
+ 	}
+diff --git a/pkg/sessionctx/variable/statusvar.go b/pkg/sessionctx/variable/statusvar.go
+index 77a959bf7e0f2..cafc30cdcba0b 100644
+--- a/pkg/sessionctx/variable/statusvar.go
++++ b/pkg/sessionctx/variable/statusvar.go
+@@ -127,6 +127,8 @@ var defaultStatus = map[string]*StatusVal{
+ 	"Ssl_cipher_list": {vardef.ScopeGlobal | vardef.ScopeSession, ""},
+ 	"Ssl_verify_mode": {vardef.ScopeGlobal | vardef.ScopeSession, 0},
+ 	"Ssl_version":     {vardef.ScopeGlobal | vardef.ScopeSession, ""},
++	"Performance_schema_session_connect_attrs_longest_seen": {vardef.ScopeGlobal, int64(0)},
++	"Performance_schema_session_connect_attrs_lost":         {vardef.ScopeGlobal, int64(0)},
+ }
+ 
+ type defaultStatusStat struct {
+@@ -143,6 +145,10 @@ func (s defaultStatusStat) Stats(vars *SessionVars) (map[string]any, error) {
+ 		statusVars[name] = v.Value
+ 	}
+ 
++	// Read live values from atomic counters for connect attrs status variables.
++	statusVars["Performance_schema_session_connect_attrs_longest_seen"] = vardef.ConnectAttrsLongestSeen.Load()
++	statusVars["Performance_schema_session_connect_attrs_lost"] = vardef.ConnectAttrsLost.Load()
++
+ 	// `vars` may be nil in unit tests.
+ 	if vars != nil && vars.TLSConnectionState != nil {
+ 		statusVars["Ssl_cipher"] = tlsutil.CipherSuiteName(vars.TLSConnectionState.CipherSuite)
+diff --git a/pkg/sessionctx/variable/sysvar.go b/pkg/sessionctx/variable/sysvar.go
+index aff7f44916781..2c304f8d29f80 100644
+--- a/pkg/sessionctx/variable/sysvar.go
++++ b/pkg/sessionctx/variable/sysvar.go
+@@ -681,6 +681,16 @@ var defaultSysVars = []*SysVar{
+ 	}},
+ 
+ 	/* The system variables below have GLOBAL scope  */
++	{Scope: vardef.ScopeGlobal, Name: vardef.PerfSchemaSessionConnectAttrsSize,
++		Value: strconv.FormatInt(vardef.DefConnectAttrsSize, 10),
++		Type:  vardef.TypeInt, MinValue: -1, MaxValue: 65536,
++		GetGlobal: func(_ context.Context, sv *SessionVars) (string, error) {
++			return strconv.FormatInt(vardef.ConnectAttrsSize.Load(), 10), nil
++		},
++		SetGlobal: func(_ context.Context, s *SessionVars, val string) error {
++			vardef.ConnectAttrsSize.Store(TidbOptInt64(val, vardef.DefConnectAttrsSize))
++			return nil
++		}},
+ 	{Scope: vardef.ScopeGlobal, Name: vardef.MaxPreparedStmtCount, Value: strconv.FormatInt(vardef.DefMaxPreparedStmtCount, 10), Type: vardef.TypeInt, MinValue: -1, MaxValue: 1048576,
+ 		SetGlobal: func(_ context.Context, s *SessionVars, val string) error {
+ 			num, err := strconv.ParseInt(val, 10, 64)
+diff --git a/pkg/sessionctx/variable/tests/session_test.go b/pkg/sessionctx/variable/tests/session_test.go
+index e48c754823861..af3ab151b6764 100644
+--- a/pkg/sessionctx/variable/tests/session_test.go
++++ b/pkg/sessionctx/variable/tests/session_test.go
+@@ -347,6 +347,31 @@ func TestSlowLogFormat(t *testing.T) {
+ 	require.Equal(t, resultFields+"\n"+"use test;\n"+sql, logString)
+ 	require.False(t, seVar.CurrentDBChanged)
+ 
++	// Verify SessionConnectAttrs serialization.
++	logItems.SessionConnectAttrs = map[string]string{
++		"_client_name": "libmysql",
++		"_os":          "Linux",
++		"app_name":     "test_svc",
++	}
++	logString = seVar.SlowLogFormat(logItems)
++	// json.Encoder sorts map keys, so the output is deterministic.
++	expectedAttrsLine := `# Session_connect_attrs: {"_client_name":"libmysql","_os":"Linux","app_name":"test_svc"}`
++	require.Contains(t, logString, expectedAttrsLine)
++	// Session_connect_attrs should appear after Storage_from_mpp, before Prev_stmt, and before the SQL.
++	attrsIdx := strings.Index(logString, "Session_connect_attrs")
++	mppIdx := strings.Index(logString, variable.SlowLogStorageFromMPP)
++	prevStmtIdx := strings.Index(logString, variable.SlowLogPrevStmt)
++	sqlIdx := strings.Index(logString, sql)
++	require.Greater(t, attrsIdx, 0)
++	require.Greater(t, mppIdx, 0)
++	require.Greater(t, attrsIdx, mppIdx, "Session_connect_attrs should appear after Storage_from_mpp")
++	if prevStmtIdx > 0 {
++		require.Less(t, attrsIdx, prevStmtIdx, "Session_connect_attrs should appear before Prev_stmt")
++	}
++	require.Less(t, attrsIdx, sqlIdx, "Session_connect_attrs should appear before the SQL statement")
++	// Restore for subsequent assertions.
++	logItems.SessionConnectAttrs = nil
++
+ 	// test PrepareSlowLogItemsForRules and CompleteSlowLogItemsForRules
+ 	seVar.SlowLogRules = slowlogrule.NewSessionSlowLogRules(&slowlogrule.SlowLogRules{
+ 		Fields: map[string]struct{}{
+
+From 235e0c219245ef733eaa219d45731f3baf738eb5 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Wed, 4 Mar 2026 09:29:34 +0800
+Subject: [PATCH 02/11] build: update bazel target for parse package missing
+ dependencies
+
+---
+ pkg/executor/cluster_table_test.go            |  40 ++++++
+ .../clustertablestest/cluster_tables_test.go  |  54 ++++++++
+ pkg/server/conn_test.go                       | 128 ++++++++++++++----
+ pkg/server/internal/parse/BUILD.bazel         |   2 +
+ pkg/server/internal/parse/parse.go            |  36 ++---
+ pkg/sessionctx/variable/tests/session_test.go |  33 ++++-
+ .../variable/tests/variable_test.go           |  31 ++++-
+ 7 files changed, 275 insertions(+), 49 deletions(-)
+
+diff --git a/pkg/executor/cluster_table_test.go b/pkg/executor/cluster_table_test.go
+index 529424c2aa438..220590af01c83 100644
+--- a/pkg/executor/cluster_table_test.go
++++ b/pkg/executor/cluster_table_test.go
+@@ -391,3 +391,43 @@ func removeFiles(t *testing.T, fileNames []string) {
+ 		require.NoError(t, os.Remove(fileName))
+ 	}
+ }
++
++func TestClusterTableSlowQuerySessionConnectAttrs(t *testing.T) {
++	store, dom := testkit.CreateMockStoreAndDomain(t)
++	srv := createRPCServer(t, dom)
++	defer srv.Stop()
++
++	logData := `
++# Time: 2024-01-15T10:00:00.000000+08:00
++# Txn_start_ts: 123456789
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.5
++# Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
++# Is_internal: false
++# Succ: true
++# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++select * from t;`
++	fileName := "tidb-slow-query-attrs.log"
++	prepareLogs(t, []string{logData}, []string{fileName})
++	defer removeFiles(t, []string{fileName})
++
++	defer config.RestoreFunc()()
++	config.UpdateGlobal(func(conf *config.Config) {
++		conf.Log.SlowQueryFile = fileName
++	})
++
++	tk := testkit.NewTestKit(t, store)
++	tk.MustExec("use information_schema")
++
++	// Verify Session_connect_attrs column is present in cluster_slow_query as well.
++	clusterRows := tk.MustQuery("select Session_connect_attrs from information_schema.cluster_slow_query " +
++		"where time > '2024-01-01 00:00:00' and query = 'select * from t;'").Rows()
++	require.Len(t, clusterRows, 1)
++	clusterAttrsStr := clusterRows[0][0].(string)
++	require.Contains(t, clusterAttrsStr, `"_client_name"`)
++	require.Contains(t, clusterAttrsStr, `"Go-MySQL-Driver"`)
++	require.Contains(t, clusterAttrsStr, `"_os"`)
++	require.Contains(t, clusterAttrsStr, `"linux"`)
++	require.Contains(t, clusterAttrsStr, `"app_name"`)
++	require.Contains(t, clusterAttrsStr, `"test_app"`)
++}
+diff --git a/pkg/infoschema/test/clustertablestest/cluster_tables_test.go b/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
+index 0617a4bca9326..60f3d9fb71d72 100644
+--- a/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
++++ b/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
+@@ -291,6 +291,60 @@ func TestSelectClusterTable(t *testing.T) {
+ 	tk.MustQuery("select instance from `CLUSTER_SLOW_QUERY` where time='2019-02-12 19:33:56.571953'").Check(testkit.Rows(instanceAddr))
+ }
+ 
++func TestClusterSlowQuerySessionConnectAttrs(t *testing.T) {
++	// setup suite
++	s := new(clusterTablesSuite)
++	s.store, s.dom = testkit.CreateMockStoreAndDomain(t)
++	s.rpcserver, s.listenAddr = s.setUpRPCService(t, "127.0.0.1:0", nil)
++	s.httpServer, s.mockAddr = s.setUpMockPDHTTPServer()
++	s.startTime = time.Now()
++	defer s.httpServer.Close()
++	defer s.rpcserver.Stop()
++
++	f, err := os.CreateTemp("", "tidb-cluster-slow-*.log")
++	require.NoError(t, err)
++	_, err = f.WriteString(`# Time: 2024-01-15T10:00:00.000000+08:00
++# Txn_start_ts: 123456789
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.5
++# Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
++# Is_internal: false
++# Succ: true
++# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++select * from t;
++`)
++	require.NoError(t, err)
++	require.NoError(t, f.Close())
++	defer func() { require.NoError(t, os.Remove(f.Name())) }()
++
++	defer config.RestoreFunc()()
++	config.UpdateGlobal(func(conf *config.Config) {
++		conf.Log.SlowQueryFile = f.Name()
++	})
++
++	tk := s.newTestKitWithRoot(t)
++	tk.MustExec("use information_schema")
++	tk.MustExec("set time_zone = '+08:00';")
++
++	rows := tk.MustQuery("select Session_connect_attrs from information_schema.cluster_slow_query " +
++		"where query = 'select * from t;'").Rows()
++	require.Len(t, rows, 1)
++	attrsStr := rows[0][0].(string)
++	require.Contains(t, attrsStr, `"_client_name"`)
++	require.Contains(t, attrsStr, `"Go-MySQL-Driver"`)
++	require.Contains(t, attrsStr, `"_os"`)
++	require.Contains(t, attrsStr, `"linux"`)
++	require.Contains(t, attrsStr, `"app_name"`)
++	require.Contains(t, attrsStr, `"test_app"`)
++
++	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$._client_name') from information_schema.cluster_slow_query " +
++		"where query = 'select * from t;'").
++		Check(testkit.Rows(`"Go-MySQL-Driver"`))
++	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$.app_name') from information_schema.cluster_slow_query " +
++		"where query = 'select * from t;'").
++		Check(testkit.Rows(`"test_app"`))
++}
++
+ func TestSelectClusterTablePrivilege(t *testing.T) {
+ 	// setup suite
+ 	s := new(clusterTablesSuite)
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index 65a288296ee4f..3abf57905cdaa 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -2302,11 +2302,11 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 
+ 		// Construct payload
+ 		// Capability: ClientProtocol41 | ClientConnectAtts
+-		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
+ 
+ 		var buf bytes.Buffer
+ 		// Header (32 bytes)
+-		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, clientCap)
+ 		binary.Write(&buf, binary.LittleEndian, uint32(0)) // MaxPacketSize
+ 		buf.WriteByte(0)                                   // Collation
+ 		buf.Write(make([]byte, 23))                        // Reserved
+@@ -2361,13 +2361,91 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		require.Equal(t, int64(8), vardef.ConnectAttrsLongestSeen.Load()) // 4+4=8
+ 	})
+ 
++	t.Run("limit 0 disables collection", func(t *testing.T) {
++		vardef.ConnectAttrsSize.Store(0)
++		vardef.ConnectAttrsLongestSeen.Store(0)
++		vardef.ConnectAttrsLost.Store(0)
++
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var buf bytes.Buffer
++		binary.Write(&buf, binary.LittleEndian, clientCap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		attrsBuf := bytes.NewBuffer(nil)
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ab")
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("cd")
++		attrsBytes := attrsBuf.Bytes()
++		buf.WriteByte(byte(len(attrsBytes)))
++		buf.Write(attrsBytes)
++		data := buf.Bytes()
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// limit 0 disables collection: no attrs and no truncation side effects.
++		require.Len(t, p.Attrs, 0)
++		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(0), vardef.ConnectAttrsLongestSeen.Load())
++	})
++
++	t.Run("limit 65536 acceptance", func(t *testing.T) {
++		vardef.ConnectAttrsSize.Store(65536)
++		vardef.ConnectAttrsLongestSeen.Store(0)
++		vardef.ConnectAttrsLost.Store(0)
++
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var buf bytes.Buffer
++		binary.Write(&buf, binary.LittleEndian, clientCap)
++		binary.Write(&buf, binary.LittleEndian, uint32(0))
++		buf.WriteByte(0)
++		buf.Write(make([]byte, 23))
++		buf.WriteString("root")
++		buf.WriteByte(0)
++		buf.WriteByte(0)
++
++		attrsBuf := bytes.NewBuffer(nil)
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("ab")
++		attrsBuf.WriteByte(2)
++		attrsBuf.WriteString("cd")
++		attrsBytes := attrsBuf.Bytes()
++		buf.WriteByte(byte(len(attrsBytes)))
++		buf.Write(attrsBytes)
++		data := buf.Bytes()
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++
++		// 65536 should easily accept everything
++		require.Len(t, p.Attrs, 1)
++		require.Equal(t, "cd", p.Attrs["ab"])
++
++		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(4), vardef.ConnectAttrsLongestSeen.Load())
++	})
++
+ 	t.Run("limit 1MiB rejection", func(t *testing.T) {
+ 		// Construct payload declaring > 1 MiB of attributes.
+-		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
+ 
+ 		var buf bytes.Buffer
+ 		// Header (32 bytes)
+-		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, clientCap)
+ 		binary.Write(&buf, binary.LittleEndian, uint32(0))
+ 		buf.WriteByte(0)
+ 		buf.Write(make([]byte, 23))
+@@ -2402,11 +2480,11 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		vardef.ConnectAttrsLongestSeen.Store(0)
+ 		vardef.ConnectAttrsLost.Store(0)
+ 
+-		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
+ 
+ 		var buf bytes.Buffer
+ 		// Header (32 bytes)
+-		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, clientCap)
+ 		binary.Write(&buf, binary.LittleEndian, uint32(0))
+ 		buf.WriteByte(0)
+ 		buf.Write(make([]byte, 23))
+@@ -2455,10 +2533,10 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		vardef.ConnectAttrsLongestSeen.Store(100)
+ 		vardef.ConnectAttrsLost.Store(0)
+ 
+-		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
+ 
+ 		var buf bytes.Buffer
+-		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, clientCap)
+ 		binary.Write(&buf, binary.LittleEndian, uint32(0))
+ 		buf.WriteByte(0)
+ 		buf.Write(make([]byte, 23))
+@@ -2502,18 +2580,18 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 			"LongestSeen should not be updated for payloads >= 64KB")
+ 	})
+ 
+-	t.Run("underscore-prefixed attr whitelist", func(t *testing.T) {
+-		// Only standard connector attributes (_client_name, _os, etc.) whose
+-		// names start with "_" are accepted. Unknown "_"-prefixed keys sent by
+-		// a client (including "_truncated" and arbitrary custom ones) are dropped.
++	t.Run("underscore-prefixed attrs except reserved key", func(t *testing.T) {
++		// Keep underscore-prefixed attributes from clients for MySQL parity and
++		// observability, but always drop client-provided "_truncated" because it
++		// is reserved for server-generated truncation metadata.
+ 		vardef.ConnectAttrsSize.Store(-1) // Limit mapped to 65536 max internally
+ 		vardef.ConnectAttrsLongestSeen.Store(0)
+ 		vardef.ConnectAttrsLost.Store(0)
+ 
+-		var cap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
++		var clientCap uint32 = mysql.ClientProtocol41 | mysql.ClientConnectAtts
+ 
+ 		var buf bytes.Buffer
+-		binary.Write(&buf, binary.LittleEndian, cap)
++		binary.Write(&buf, binary.LittleEndian, clientCap)
+ 		binary.Write(&buf, binary.LittleEndian, uint32(0))
+ 		buf.WriteByte(0)
+ 		buf.Write(make([]byte, 23))
+@@ -2522,17 +2600,19 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		buf.WriteByte(0)
+ 
+ 		// Attrs:
+-		//   "_client_name":"Go-MySQL-Driver"  → standard, must be kept
+-		//   "_os":"linux"                     → standard, must be kept
++		//   "_client_name":"Go-MySQL-Driver"  → must be kept
++		//   "_os":"linux"                     → must be kept
++		//   "_program_name":"mysql"           → must be kept
++		//   "_custom":"val"                   → must be kept
+ 		//   "_truncated":"fake"               → server-reserved, must be dropped
+-		//   "_custom":"val"                   → unknown underscore key, must be dropped
+-		//   "app_name":"myapp"                → user-defined (no underscore), must be kept
++		//   "app_name":"myapp"                → must be kept
+ 		attrsBuf := bytes.NewBuffer(nil)
+ 		for _, kv := range [][2]string{
+ 			{"_client_name", "Go-MySQL-Driver"},
+ 			{"_os", "linux"},
+-			{"_truncated", "fake"},
++			{"_program_name", "mysql"},
+ 			{"_custom", "val"},
++			{"_truncated", "fake"},
+ 			{"app_name", "myapp"},
+ 		} {
+ 			attrsBuf.WriteByte(byte(len(kv[0])))
+@@ -2553,16 +2633,16 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
+ 		require.NoError(t, err)
+ 
+-		// Standard connector attrs and plain user attrs are kept.
+-		require.Len(t, p.Attrs, 3)
++		// All keys are kept except the reserved _truncated key.
++		require.Len(t, p.Attrs, 5)
+ 		require.Equal(t, "Go-MySQL-Driver", p.Attrs["_client_name"])
+ 		require.Equal(t, "linux", p.Attrs["_os"])
++		require.Equal(t, "mysql", p.Attrs["_program_name"])
++		require.Equal(t, "val", p.Attrs["_custom"])
+ 		require.Equal(t, "myapp", p.Attrs["app_name"])
+-		// Non-standard underscore keys must be absent.
++		// Reserved key must be absent.
+ 		_, hasTruncated := p.Attrs["_truncated"]
+ 		require.False(t, hasTruncated, "_truncated sent by client must be dropped")
+-		_, hasCustom := p.Attrs["_custom"]
+-		require.False(t, hasCustom, "unknown _-prefixed key sent by client must be dropped")
+ 
+ 		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
+ 	})
+diff --git a/pkg/server/internal/parse/BUILD.bazel b/pkg/server/internal/parse/BUILD.bazel
+index d616d1474f8dd..44264f6cf4942 100644
+--- a/pkg/server/internal/parse/BUILD.bazel
++++ b/pkg/server/internal/parse/BUILD.bazel
+@@ -9,7 +9,9 @@ go_library(
+         "//pkg/parser/mysql",
+         "//pkg/server/internal/handshake",
+         "//pkg/server/internal/util",
++        "//pkg/sessionctx/vardef",
+         "//pkg/util/logutil",
++        "@com_github_pingcap_errors//:errors",
+         "@org_uber_go_zap//:zap",
+     ],
+ )
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index 273238d4e0656..fe830fdbcef18 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -167,19 +167,10 @@ func HandshakeResponseBody(ctx context.Context, packet *handshake.Response41, da
+ 	return nil
+ }
+ 
+-// standardConnectorAttrs is the set of underscore-prefixed attribute names
+-// defined by the MySQL connector specification. Only these are accepted from
+-// clients; any other "_"-prefixed key (including "_truncated", which is
+-// written by the server) is silently dropped to prevent name collisions.
+-var standardConnectorAttrs = map[string]struct{}{
+-	"_client_name":    {},
+-	"_client_version": {},
+-	"_os":             {},
+-	"_pid":            {},
+-	"_platform":       {},
+-	"_source_host":    {},
+-	"_client_license": {},
+-}
++// reservedConnAttrTruncated is injected by TiDB when connection attributes
++// are truncated. A client-provided key with the same name is ignored to avoid
++// collisions with server-generated metadata.
++const reservedConnAttrTruncated = "_truncated"
+ 
+ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 	attrs := make(map[string]string)
+@@ -188,6 +179,10 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 	var acceptedSize int64
+ 	truncated := false
+ 	limit := vardef.ConnectAttrsSize.Load()
++	if limit == 0 {
++		// Disabled: do not collect, truncate, or emit metadata.
++		return attrs, "", nil
++	}
+ 
+ 	for pos < len(data) {
+ 		key, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+@@ -201,15 +196,10 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		}
+ 		pos += off
+ 
+-		// Accept only known standard connector attributes whose names start with
+-		// "_". Unknown underscore-prefixed keys (including "_truncated", which is
+-		// written by the server after parsing) are silently dropped.
+-		// Note: the whitelist check happens before totalSize is updated, so
+-		// filtered-out bytes do not count toward the size limit or LongestSeen.
+-		if len(key) > 0 && key[0] == '_' {
+-			if _, ok := standardConnectorAttrs[string(key)]; !ok {
+-				continue
+-			}
++		// Keep all client-provided keys (including underscore-prefixed MySQL
++		// connector attributes) except the server-reserved "_truncated" key.
++		if string(key) == reservedConnAttrTruncated {
++			continue
+ 		}
+ 
+ 		kvSize := int64(len(key)) + int64(len(value))
+@@ -260,7 +250,7 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		}
+ 
+ 		truncatedBytes := totalSize - acceptedSize
+-		attrs["_truncated"] = strconv.FormatInt(truncatedBytes, 10)
++		attrs[reservedConnAttrTruncated] = strconv.FormatInt(truncatedBytes, 10)
+ 		warning = fmt.Sprintf(
+ 			"session connection attributes truncated: total size %d bytes exceeds "+
+ 				"performance_schema_session_connect_attrs_size (%d), %d bytes were discarded",
+diff --git a/pkg/sessionctx/variable/tests/session_test.go b/pkg/sessionctx/variable/tests/session_test.go
+index af3ab151b6764..094142ce49fd0 100644
+--- a/pkg/sessionctx/variable/tests/session_test.go
++++ b/pkg/sessionctx/variable/tests/session_test.go
+@@ -908,7 +908,6 @@ func TestTiDBOptPartialOrderedIndexForTopN(t *testing.T) {
+ 	_, err = sv.Validate(vars, "1", vardef.ScopeSession)
+ 	require.Error(t, err)
+ 	require.Contains(t, err.Error(), "can't be set to the value of")
+-
+ 	_, err = sv.Validate(vars, "0", vardef.ScopeSession)
+ 	require.Error(t, err)
+ 	require.Contains(t, err.Error(), "can't be set to the value of")
+@@ -947,6 +946,38 @@ func TestTiDBOptPartialOrderedIndexForTopN(t *testing.T) {
+ 	require.False(t, vars.IsPartialOrderedIndexForTopNEnabled())
+ }
+ 
++func TestPerfSchemaSessionConnectAttrsSizeGlobalSQL(t *testing.T) {
++	store := testkit.CreateMockStore(t)
++	tk := testkit.NewTestKit(t, store)
++
++	originSize := vardef.ConnectAttrsSize.Load()
++	defer func() {
++		vardef.ConnectAttrsSize.Store(originSize)
++		tk.MustExec("set global performance_schema_session_connect_attrs_size = " + strconv.FormatInt(originSize, 10))
++	}()
++
++	tk.MustExec("set global performance_schema_session_connect_attrs_size = 0")
++	tk.MustQuery("select @@global.performance_schema_session_connect_attrs_size").Check(testkit.Rows("0"))
++	require.Equal(t, int64(0), vardef.ConnectAttrsSize.Load())
++
++	tk.MustExec("set global performance_schema_session_connect_attrs_size = 65536")
++	tk.MustQuery("select @@global.performance_schema_session_connect_attrs_size").Check(testkit.Rows("65536"))
++	require.Equal(t, int64(65536), vardef.ConnectAttrsSize.Load())
++
++	tk.MustExec("set global performance_schema_session_connect_attrs_size = -1")
++	tk.MustQuery("select @@global.performance_schema_session_connect_attrs_size").Check(testkit.Rows("-1"))
++	require.Equal(t, int64(-1), vardef.ConnectAttrsSize.Load())
++
++	// Out-of-range values are normalized by int sysvar min/max.
++	tk.MustExec("set global performance_schema_session_connect_attrs_size = 70000")
++	tk.MustQuery("select @@global.performance_schema_session_connect_attrs_size").Check(testkit.Rows("65536"))
++	require.Equal(t, int64(65536), vardef.ConnectAttrsSize.Load())
++
++	tk.MustExec("set global performance_schema_session_connect_attrs_size = -2")
++	tk.MustQuery("select @@global.performance_schema_session_connect_attrs_size").Check(testkit.Rows("-1"))
++	require.Equal(t, int64(-1), vardef.ConnectAttrsSize.Load())
++}
++
+ func TestSetTiDBCloudStorageURI(t *testing.T) {
+ 	vars := variable.NewSessionVars(nil)
+ 	mock := variable.NewMockGlobalAccessor4Tests()
+diff --git a/pkg/sessionctx/variable/tests/variable_test.go b/pkg/sessionctx/variable/tests/variable_test.go
+index 11204f989440e..e68b9264c3664 100644
+--- a/pkg/sessionctx/variable/tests/variable_test.go
++++ b/pkg/sessionctx/variable/tests/variable_test.go
+@@ -164,13 +164,42 @@ func TestIntValidation(t *testing.T) {
+ 	val, err = sv.Validate(vars, "300", vardef.ScopeSession)
+ 	require.NoError(t, err)
+ 	require.Equal(t, "300", val)
+-
+ 	// out of range but permitted due to auto value
+ 	val, err = sv.Validate(vars, "-1", vardef.ScopeSession)
+ 	require.NoError(t, err)
+ 	require.Equal(t, "-1", val)
+ }
+ 
++func TestPerfSchemaSessionConnectAttrsSizeValidation(t *testing.T) {
++	sv := variable.GetSysVar(vardef.PerfSchemaSessionConnectAttrsSize)
++	require.NotNil(t, sv)
++	require.True(t, sv.HasGlobalScope())
++	require.False(t, sv.HasSessionScope())
++
++	vars := variable.NewSessionVars(nil)
++
++	val, err := sv.Validate(vars, "-1", vardef.ScopeGlobal)
++	require.NoError(t, err)
++	require.Equal(t, "-1", val)
++
++	val, err = sv.Validate(vars, "0", vardef.ScopeGlobal)
++	require.NoError(t, err)
++	require.Equal(t, "0", val)
++
++	val, err = sv.Validate(vars, "65536", vardef.ScopeGlobal)
++	require.NoError(t, err)
++	require.Equal(t, "65536", val)
++
++	// Out-of-range values should be clamped by int sysvar validation.
++	val, err = sv.Validate(vars, "65537", vardef.ScopeGlobal)
++	require.NoError(t, err)
++	require.Equal(t, "65536", val)
++
++	val, err = sv.Validate(vars, "-2", vardef.ScopeGlobal)
++	require.NoError(t, err)
++	require.Equal(t, "-1", val)
++}
++
+ func TestUintValidation(t *testing.T) {
+ 	sv := variable.SysVar{Scope: vardef.ScopeGlobal | vardef.ScopeSession, Name: "mynewsysvar", Value: "123", Type: vardef.TypeUnsigned, MinValue: 10, MaxValue: 300, AllowAutoValue: true}
+ 	vars := variable.NewSessionVars(nil)
+
+From cd641cdbbea83ae9d34c6c0ac48078f987310d74 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Thu, 5 Mar 2026 11:18:13 +0800
+Subject: [PATCH 03/11] server, sessionctx: refine connect attrs handling and
+ slow log output
+
+---
+ pkg/server/conn_test.go                       | 16 ++---
+ pkg/server/internal/parse/parse.go            | 39 ++++++++---
+ pkg/server/internal/parse/parse_test.go       | 69 +++++++++++++++++++
+ pkg/sessionctx/variable/tests/session_test.go |  4 ++
+ 4 files changed, 109 insertions(+), 19 deletions(-)
+
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index 3abf57905cdaa..93292b7b5e355 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -2580,10 +2580,10 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 			"LongestSeen should not be updated for payloads >= 64KB")
+ 	})
+ 
+-	t.Run("underscore-prefixed attrs except reserved key", func(t *testing.T) {
++	t.Run("underscore-prefixed attrs include reserved key", func(t *testing.T) {
+ 		// Keep underscore-prefixed attributes from clients for MySQL parity and
+-		// observability, but always drop client-provided "_truncated" because it
+-		// is reserved for server-generated truncation metadata.
++		// observability. The client-provided "_truncated" is retained when no
++		// truncation occurs; if truncation happens, server may overwrite it.
+ 		vardef.ConnectAttrsSize.Store(-1) // Limit mapped to 65536 max internally
+ 		vardef.ConnectAttrsLongestSeen.Store(0)
+ 		vardef.ConnectAttrsLost.Store(0)
+@@ -2604,7 +2604,7 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		//   "_os":"linux"                     → must be kept
+ 		//   "_program_name":"mysql"           → must be kept
+ 		//   "_custom":"val"                   → must be kept
+-		//   "_truncated":"fake"               → server-reserved, must be dropped
++		//   "_truncated":"fake"               → kept (may be overwritten by server on truncation)
+ 		//   "app_name":"myapp"                → must be kept
+ 		attrsBuf := bytes.NewBuffer(nil)
+ 		for _, kv := range [][2]string{
+@@ -2633,16 +2633,14 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
+ 		require.NoError(t, err)
+ 
+-		// All keys are kept except the reserved _truncated key.
+-		require.Len(t, p.Attrs, 5)
++		// All keys are kept.
++		require.Len(t, p.Attrs, 6)
+ 		require.Equal(t, "Go-MySQL-Driver", p.Attrs["_client_name"])
+ 		require.Equal(t, "linux", p.Attrs["_os"])
+ 		require.Equal(t, "mysql", p.Attrs["_program_name"])
+ 		require.Equal(t, "val", p.Attrs["_custom"])
++		require.Equal(t, "fake", p.Attrs["_truncated"])
+ 		require.Equal(t, "myapp", p.Attrs["app_name"])
+-		// Reserved key must be absent.
+-		_, hasTruncated := p.Attrs["_truncated"]
+-		require.False(t, hasTruncated, "_truncated sent by client must be dropped")
+ 
+ 		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
+ 	})
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index fe830fdbcef18..db103697ad76a 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -20,6 +20,7 @@ import (
+ 	"encoding/binary"
+ 	"fmt"
+ 	"strconv"
++	"strings"
+ 
+ 	"github.com/pingcap/errors"
+ 	"github.com/pingcap/tidb/pkg/parser/mysql"
+@@ -168,16 +169,25 @@ func HandshakeResponseBody(ctx context.Context, packet *handshake.Response41, da
+ }
+ 
+ // reservedConnAttrTruncated is injected by TiDB when connection attributes
+-// are truncated. A client-provided key with the same name is ignored to avoid
+-// collisions with server-generated metadata.
++// are truncated. A client-provided key with the same name may be overwritten
++// when truncation happens.
+ const reservedConnAttrTruncated = "_truncated"
+ 
++var standardConnAttrs = map[string]struct{}{
++	"_client_name":    {},
++	"_client_version": {},
++	"_os":             {},
++	"_pid":            {},
++	"_platform":       {},
++}
++
+ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 	attrs := make(map[string]string)
+ 	pos := 0
+ 	var totalSize int64
+ 	var acceptedSize int64
+ 	truncated := false
++	hasDeprecatedUnderscoreAttr := false
+ 	limit := vardef.ConnectAttrsSize.Load()
+ 	if limit == 0 {
+ 		// Disabled: do not collect, truncate, or emit metadata.
+@@ -196,10 +206,15 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		}
+ 		pos += off
+ 
++		keyStr := string(key)
++
+ 		// Keep all client-provided keys (including underscore-prefixed MySQL
+-		// connector attributes) except the server-reserved "_truncated" key.
+-		if string(key) == reservedConnAttrTruncated {
+-			continue
++		// connector attributes). If truncation happens, server may overwrite
++		// the reserved "_truncated" key for observability metadata.
++		if !hasDeprecatedUnderscoreAttr && strings.HasPrefix(keyStr, "_") {
++			if _, ok := standardConnAttrs[keyStr]; !ok {
++				hasDeprecatedUnderscoreAttr = true
++			}
+ 		}
+ 
+ 		kvSize := int64(len(key)) + int64(len(value))
+@@ -221,7 +236,7 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		}
+ 
+ 		if !truncated {
+-			attrs[string(key)] = string(value)
++			attrs[keyStr] = string(value)
+ 			acceptedSize += kvSize
+ 		}
+ 	}
+@@ -241,7 +256,11 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		}
+ 	}
+ 
+-	var warning string
++	warnings := make([]string, 0, 2)
++	if hasDeprecatedUnderscoreAttr {
++		warnings = append(warnings,
++			"custom connection attributes with leading underscore are deprecated and will be rejected in a future release")
++	}
+ 	if truncated {
+ 		// Calculate what limit was actually enforced
+ 		effectiveLimit := limit
+@@ -251,10 +270,10 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 
+ 		truncatedBytes := totalSize - acceptedSize
+ 		attrs[reservedConnAttrTruncated] = strconv.FormatInt(truncatedBytes, 10)
+-		warning = fmt.Sprintf(
++		warnings = append(warnings, fmt.Sprintf(
+ 			"session connection attributes truncated: total size %d bytes exceeds "+
+ 				"performance_schema_session_connect_attrs_size (%d), %d bytes were discarded",
+-			totalSize, effectiveLimit, truncatedBytes)
++			totalSize, effectiveLimit, truncatedBytes))
+ 	}
+-	return attrs, warning, nil
++	return attrs, strings.Join(warnings, "; "), nil
+ }
+diff --git a/pkg/server/internal/parse/parse_test.go b/pkg/server/internal/parse/parse_test.go
+index cc44038cb50a5..b316a50ec955a 100644
+--- a/pkg/server/internal/parse/parse_test.go
++++ b/pkg/server/internal/parse/parse_test.go
+@@ -15,9 +15,11 @@
+ package parse
+ 
+ import (
++	"bytes"
+ 	"testing"
+ 
+ 	"github.com/pingcap/tidb/pkg/parser/mysql"
++	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+@@ -43,3 +45,70 @@ func TestParseStmtFetchCmd(t *testing.T) {
+ 		require.Equal(t, tc.err, err)
+ 	}
+ }
++
++func TestParseAttrsUnderscoreWarning(t *testing.T) {
++	origSize := vardef.ConnectAttrsSize.Load()
++	defer vardef.ConnectAttrsSize.Store(origSize)
++	vardef.ConnectAttrsSize.Store(-1)
++
++	buildAttrsPayload := func(kvs [][2]string) []byte {
++		var buf bytes.Buffer
++		for _, kv := range kvs {
++			buf.WriteByte(byte(len(kv[0])))
++			buf.WriteString(kv[0])
++			buf.WriteByte(byte(len(kv[1])))
++			buf.WriteString(kv[1])
++		}
++		return buf.Bytes()
++	}
++
++	t.Run("warn for custom underscore attrs", func(t *testing.T) {
++		payload := buildAttrsPayload([][2]string{
++			{"_client_name", "libmysql"},
++			{"_custom", "val"},
++			{"_program_name", "mysql"},
++			{"app_name", "myapp"},
++		})
++
++		attrs, warning, err := parseAttrs(payload)
++		require.NoError(t, err)
++		require.Equal(t, "libmysql", attrs["_client_name"])
++		require.Equal(t, "val", attrs["_custom"])
++		require.Equal(t, "mysql", attrs["_program_name"])
++		require.Equal(t, "myapp", attrs["app_name"])
++		require.Contains(t, warning, "custom connection attributes with leading underscore are deprecated and will be rejected in a future release")
++	})
++
++	t.Run("no warning for standard underscore attrs", func(t *testing.T) {
++		payload := buildAttrsPayload([][2]string{
++			{"_client_name", "libmysql"},
++			{"_client_version", "8.0.33"},
++			{"_os", "linux"},
++			{"_pid", "123"},
++			{"_platform", "x86_64"},
++			{"app_name", "myapp"},
++		})
++
++		_, warning, err := parseAttrs(payload)
++		require.NoError(t, err)
++		require.Empty(t, warning)
++	})
++
++	t.Run("server may overwrite client _truncated on truncation", func(t *testing.T) {
++		origLost := vardef.ConnectAttrsLost.Load()
++		defer vardef.ConnectAttrsLost.Store(origLost)
++		vardef.ConnectAttrsLost.Store(0)
++		vardef.ConnectAttrsSize.Store(20)
++
++		payload := buildAttrsPayload([][2]string{
++			{"_truncated", "client-value"},
++			{"app_name", "my_service"},
++		})
++
++		attrs, warning, err := parseAttrs(payload)
++		require.NoError(t, err)
++		require.Contains(t, warning, "session connection attributes truncated")
++		require.NotEqual(t, "client-value", attrs["_truncated"])
++		require.Equal(t, int64(1), vardef.ConnectAttrsLost.Load())
++	})
++}
+diff --git a/pkg/sessionctx/variable/tests/session_test.go b/pkg/sessionctx/variable/tests/session_test.go
+index 094142ce49fd0..f8f30469d0597 100644
+--- a/pkg/sessionctx/variable/tests/session_test.go
++++ b/pkg/sessionctx/variable/tests/session_test.go
+@@ -357,6 +357,10 @@ func TestSlowLogFormat(t *testing.T) {
+ 	// json.Encoder sorts map keys, so the output is deterministic.
+ 	expectedAttrsLine := `# Session_connect_attrs: {"_client_name":"libmysql","_os":"Linux","app_name":"test_svc"}`
+ 	require.Contains(t, logString, expectedAttrsLine)
++	seVar.EnableRedactLog = vardef.On
++	logString = seVar.SlowLogFormat(logItems)
++	require.Contains(t, logString, expectedAttrsLine)
++	seVar.EnableRedactLog = vardef.Off
+ 	// Session_connect_attrs should appear after Storage_from_mpp, before Prev_stmt, and before the SQL.
+ 	attrsIdx := strings.Index(logString, "Session_connect_attrs")
+ 	mppIdx := strings.Index(logString, variable.SlowLogStorageFromMPP)
+
+From 80680e878df68d4ff376752666cfbc70d279e8d2 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Mon, 9 Mar 2026 16:20:22 +0800
+Subject: [PATCH 04/11] server, executor, sessionctx: refine session connect
+ attrs slow log behavior
+
+---
+ pkg/executor/slow_query_sql_test.go           | 49 +++++++++++++++++++
+ pkg/server/conn_test.go                       | 13 +++--
+ pkg/server/internal/parse/BUILD.bazel         |  3 +-
+ pkg/server/internal/parse/parse.go            |  6 +--
+ pkg/sessionctx/variable/tests/session_test.go |  9 ++++
+ 5 files changed, 69 insertions(+), 11 deletions(-)
+
+diff --git a/pkg/executor/slow_query_sql_test.go b/pkg/executor/slow_query_sql_test.go
+index b2d14f93334f5..26d6a92797f8c 100644
+--- a/pkg/executor/slow_query_sql_test.go
++++ b/pkg/executor/slow_query_sql_test.go
+@@ -595,3 +595,52 @@ select * from t;
+ 		"where query = 'select * from t;'").
+ 		Check(testkit.Rows(`"test_app"`))
+ }
++
++func TestSessionConnectAttrsMissingAndTruncatedInSlowQuery(t *testing.T) {
++	originCfg := config.GetGlobalConfig()
++	newCfg := *originCfg
++	f, err := os.CreateTemp("", "tidb-slow-*.log")
++	require.NoError(t, err)
++	_, err = f.WriteString(`# Time: 2024-01-15T10:00:00.000000+08:00
++# Txn_start_ts: 123456789
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.5
++# Digest: 1111111111111111111111111111111111111111111111111111111111111111
++# Is_internal: false
++# Succ: true
++select * from t_no_attrs;
++# Time: 2024-01-15T10:00:01.000000+08:00
++# Txn_start_ts: 123456790
++# User@Host: root[root] @ localhost [127.0.0.1]
++# Query_time: 0.6
++# Digest: 2222222222222222222222222222222222222222222222222222222222222222
++# Is_internal: false
++# Succ: true
++# Session_connect_attrs: {"_truncated":"4","app_name":"trunc_case"}
++select * from t_truncated;
++`)
++	require.NoError(t, err)
++	require.NoError(t, f.Close())
++	newCfg.Log.SlowQueryFile = f.Name()
++	config.StoreGlobalConfig(&newCfg)
++	defer func() {
++		config.StoreGlobalConfig(originCfg)
++		require.NoError(t, os.Remove(newCfg.Log.SlowQueryFile))
++	}()
++	require.NoError(t, logutil.InitLogger(newCfg.Log.ToLogConfig()))
++	store := testkit.CreateMockStore(t)
++	tk := testkit.NewTestKit(t, store)
++
++	tk.MustExec("set @@time_zone='+08:00'")
++	tk.MustExec(fmt.Sprintf("set @@tidb_slow_query_file='%v'", f.Name()))
++
++	// Missing Session_connect_attrs should parse to JSON null-like empty behavior.
++	tk.MustQuery("select Session_connect_attrs = cast('null' as json), JSON_EXTRACT(Session_connect_attrs, '$._truncated') is null from information_schema.slow_query " +
++		"where query = 'select * from t_no_attrs;' ").
++		Check(testkit.Rows("1 1"))
++
++	// Truncation metadata key should be preserved and queryable from JSON.
++	tk.MustQuery("select JSON_UNQUOTE(JSON_EXTRACT(Session_connect_attrs, '$._truncated')), JSON_UNQUOTE(JSON_EXTRACT(Session_connect_attrs, '$.app_name')) from information_schema.slow_query " +
++		"where query = 'select * from t_truncated;' ").
++		Check(testkit.Rows("4 trunc_case"))
++}
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index 93292b7b5e355..50da5ca8f5f81 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -2361,7 +2361,7 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		require.Equal(t, int64(8), vardef.ConnectAttrsLongestSeen.Load()) // 4+4=8
+ 	})
+ 
+-	t.Run("limit 0 disables collection", func(t *testing.T) {
++	t.Run("limit 0 truncates all attrs", func(t *testing.T) {
+ 		vardef.ConnectAttrsSize.Store(0)
+ 		vardef.ConnectAttrsLongestSeen.Store(0)
+ 		vardef.ConnectAttrsLost.Store(0)
+@@ -2393,10 +2393,13 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
+ 		require.NoError(t, err)
+ 
+-		// limit 0 disables collection: no attrs and no truncation side effects.
+-		require.Len(t, p.Attrs, 0)
+-		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
+-		require.Equal(t, int64(0), vardef.ConnectAttrsLongestSeen.Load())
++		// limit 0 means no payload bytes are allowed: everything is truncated.
++		require.Len(t, p.Attrs, 1)
++		val, ok := p.Attrs["_truncated"]
++		require.True(t, ok)
++		require.Equal(t, "4", val)
++		require.Equal(t, int64(1), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(4), vardef.ConnectAttrsLongestSeen.Load())
+ 	})
+ 
+ 	t.Run("limit 65536 acceptance", func(t *testing.T) {
+diff --git a/pkg/server/internal/parse/BUILD.bazel b/pkg/server/internal/parse/BUILD.bazel
+index 44264f6cf4942..b2fd76ef1cc2c 100644
+--- a/pkg/server/internal/parse/BUILD.bazel
++++ b/pkg/server/internal/parse/BUILD.bazel
+@@ -25,10 +25,11 @@ go_test(
+     ],
+     embed = [":parse"],
+     flaky = True,
+-    shard_count = 2,
++    shard_count = 3,
+     deps = [
+         "//pkg/parser/mysql",
+         "//pkg/server/internal/handshake",
++        "//pkg/sessionctx/vardef",
+         "@com_github_stretchr_testify//require",
+     ],
+ )
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index db103697ad76a..02b11c7d7466a 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -189,10 +189,6 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 	truncated := false
+ 	hasDeprecatedUnderscoreAttr := false
+ 	limit := vardef.ConnectAttrsSize.Load()
+-	if limit == 0 {
+-		// Disabled: do not collect, truncate, or emit metadata.
+-		return attrs, "", nil
+-	}
+ 
+ 	for pos < len(data) {
+ 		key, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+@@ -221,7 +217,7 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 		totalSize += kvSize
+ 
+ 		// In MySQL, -1 means autosizing. We map it to a maximum of 64KB (65536)
+-		// to prevent unconstrained slow log bloating. 0 means disabled.
++		// to prevent unconstrained slow log bloating.
+ 		effectiveLimit := limit
+ 		if effectiveLimit < 0 {
+ 			effectiveLimit = 65536
+diff --git a/pkg/sessionctx/variable/tests/session_test.go b/pkg/sessionctx/variable/tests/session_test.go
+index f8f30469d0597..08827dccea708 100644
+--- a/pkg/sessionctx/variable/tests/session_test.go
++++ b/pkg/sessionctx/variable/tests/session_test.go
+@@ -341,6 +341,7 @@ func TestSlowLogFormat(t *testing.T) {
+ 	seVar.CurrentDBChanged = false
+ 	logString := seVar.SlowLogFormat(logItems)
+ 	require.Equal(t, resultFields+"\n"+sql, logString)
++	require.NotContains(t, logString, variable.SlowLogSessionConnectAttrs)
+ 
+ 	seVar.CurrentDBChanged = true
+ 	logString = seVar.SlowLogFormat(logItems)
+@@ -373,6 +374,14 @@ func TestSlowLogFormat(t *testing.T) {
+ 		require.Less(t, attrsIdx, prevStmtIdx, "Session_connect_attrs should appear before Prev_stmt")
+ 	}
+ 	require.Less(t, attrsIdx, sqlIdx, "Session_connect_attrs should appear before the SQL statement")
++
++	// Verify reserved truncation metadata key is serialized as expected.
++	logItems.SessionConnectAttrs = map[string]string{
++		"_truncated": "4",
++		"app_name":   "test_svc",
++	}
++	logString = seVar.SlowLogFormat(logItems)
++	require.Contains(t, logString, `# Session_connect_attrs: {"_truncated":"4","app_name":"test_svc"}`)
+ 	// Restore for subsequent assertions.
+ 	logItems.SessionConnectAttrs = nil
+ 
+
+From 8367cf5f5f80827ee7750ec71679340faa6048a2 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Mon, 9 Mar 2026 21:54:37 +0800
+Subject: [PATCH 05/11] pkg/server,pkg/executor,pkg/sessionctx: refine session
+ connect attrs parsing and tests
+
+---
+ pkg/executor/cluster_table_test.go            |  10 +-
+ pkg/executor/slow_query_sql_test.go           |  10 +-
+ pkg/executor/slow_query_test.go               |  10 +-
+ .../clustertablestest/cluster_tables_test.go  |  10 +-
+ pkg/server/conn_test.go                       |  77 +++++++++++
+ pkg/server/internal/parse/parse.go            | 130 +++++++++++-------
+ pkg/sessionctx/vardef/sysvar.go               |   4 +-
+ pkg/sessionctx/variable/sysvar.go             |   2 +-
+ pkg/sessionctx/variable/tests/session_test.go |   2 +-
+ .../variable/tests/variable_test.go           |   4 +-
+ pkg/testkit/testutil/require.go               |  22 +++
+ 11 files changed, 197 insertions(+), 84 deletions(-)
+
+diff --git a/pkg/executor/cluster_table_test.go b/pkg/executor/cluster_table_test.go
+index 220590af01c83..383738e98f0a2 100644
+--- a/pkg/executor/cluster_table_test.go
++++ b/pkg/executor/cluster_table_test.go
+@@ -35,6 +35,7 @@ import (
+ 	"github.com/pingcap/tidb/pkg/server"
+ 	"github.com/pingcap/tidb/pkg/session/sessmgr"
+ 	"github.com/pingcap/tidb/pkg/testkit"
++	"github.com/pingcap/tidb/pkg/testkit/testutil"
+ 	"github.com/stretchr/testify/require"
+ 	"google.golang.org/grpc"
+ )
+@@ -405,7 +406,7 @@ func TestClusterTableSlowQuerySessionConnectAttrs(t *testing.T) {
+ # Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
+ # Is_internal: false
+ # Succ: true
+-# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++` + testutil.DefaultSessionConnectAttrsSlowLogLine() + `
+ select * from t;`
+ 	fileName := "tidb-slow-query-attrs.log"
+ 	prepareLogs(t, []string{logData}, []string{fileName})
+@@ -424,10 +425,5 @@ select * from t;`
+ 		"where time > '2024-01-01 00:00:00' and query = 'select * from t;'").Rows()
+ 	require.Len(t, clusterRows, 1)
+ 	clusterAttrsStr := clusterRows[0][0].(string)
+-	require.Contains(t, clusterAttrsStr, `"_client_name"`)
+-	require.Contains(t, clusterAttrsStr, `"Go-MySQL-Driver"`)
+-	require.Contains(t, clusterAttrsStr, `"_os"`)
+-	require.Contains(t, clusterAttrsStr, `"linux"`)
+-	require.Contains(t, clusterAttrsStr, `"app_name"`)
+-	require.Contains(t, clusterAttrsStr, `"test_app"`)
++	testutil.RequireContainsDefaultSessionConnectAttrs(t, clusterAttrsStr)
+ }
+diff --git a/pkg/executor/slow_query_sql_test.go b/pkg/executor/slow_query_sql_test.go
+index 26d6a92797f8c..d3cbefec49c68 100644
+--- a/pkg/executor/slow_query_sql_test.go
++++ b/pkg/executor/slow_query_sql_test.go
+@@ -31,6 +31,7 @@ import (
+ 	"github.com/pingcap/tidb/pkg/testkit"
+ 	"github.com/pingcap/tidb/pkg/testkit/external"
+ 	"github.com/pingcap/tidb/pkg/testkit/testdata"
++	"github.com/pingcap/tidb/pkg/testkit/testutil"
+ 	"github.com/pingcap/tidb/pkg/util/logutil"
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -557,7 +558,7 @@ func TestSessionConnectAttrsInSlowQuery(t *testing.T) {
+ # Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
+ # Is_internal: false
+ # Succ: true
+-# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++` + testutil.DefaultSessionConnectAttrsSlowLogLine() + `
+ select * from t;
+ `)
+ 	require.NoError(t, err)
+@@ -580,12 +581,7 @@ select * from t;
+ 		"where query = 'select * from t;'").Rows()
+ 	require.Len(t, rows, 1)
+ 	attrsStr := rows[0][0].(string)
+-	require.Contains(t, attrsStr, `"_client_name"`)
+-	require.Contains(t, attrsStr, `"Go-MySQL-Driver"`)
+-	require.Contains(t, attrsStr, `"_os"`)
+-	require.Contains(t, attrsStr, `"linux"`)
+-	require.Contains(t, attrsStr, `"app_name"`)
+-	require.Contains(t, attrsStr, `"test_app"`)
++	testutil.RequireContainsDefaultSessionConnectAttrs(t, attrsStr)
+ 
+ 	// Verify individual keys are accessible via JSON_EXTRACT.
+ 	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$._client_name') from information_schema.slow_query " +
+diff --git a/pkg/executor/slow_query_test.go b/pkg/executor/slow_query_test.go
+index 092b8c73fe2e4..53537e0553711 100644
+--- a/pkg/executor/slow_query_test.go
++++ b/pkg/executor/slow_query_test.go
+@@ -37,6 +37,7 @@ import (
+ 	"github.com/pingcap/tidb/pkg/sessionctx"
+ 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
+ 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
++	"github.com/pingcap/tidb/pkg/testkit/testutil"
+ 	"github.com/pingcap/tidb/pkg/types"
+ 	"github.com/pingcap/tidb/pkg/util"
+ 	"github.com/pingcap/tidb/pkg/util/logutil"
+@@ -293,7 +294,7 @@ func TestParseSlowLogSessionConnectAttrs(t *testing.T) {
+ # Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
+ # Is_internal: false
+ # Succ: true
+-# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++` + testutil.DefaultSessionConnectAttrsSlowLogLine() + `
+ # Prev_stmt: begin;
+ select * from t;
+ `
+@@ -332,12 +333,7 @@ select * from t;
+ 	// Verify the parsed JSON contains the expected keys.
+ 	bj := rows[0][colIdx].GetMysqlJSON()
+ 	bjStr := bj.String()
+-	require.Contains(t, bjStr, `"_client_name"`)
+-	require.Contains(t, bjStr, `"Go-MySQL-Driver"`)
+-	require.Contains(t, bjStr, `"_os"`)
+-	require.Contains(t, bjStr, `"linux"`)
+-	require.Contains(t, bjStr, `"app_name"`)
+-	require.Contains(t, bjStr, `"test_app"`)
++	testutil.RequireContainsDefaultSessionConnectAttrs(t, bjStr)
+ }
+ 
+ // It changes variable.MaxOfMaxAllowedPacket, so must be stayed in SerialSuite.
+diff --git a/pkg/infoschema/test/clustertablestest/cluster_tables_test.go b/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
+index 60f3d9fb71d72..ebc3eaac70afb 100644
+--- a/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
++++ b/pkg/infoschema/test/clustertablestest/cluster_tables_test.go
+@@ -51,6 +51,7 @@ import (
+ 	"github.com/pingcap/tidb/pkg/store/mockstore/unistore"
+ 	"github.com/pingcap/tidb/pkg/testkit"
+ 	"github.com/pingcap/tidb/pkg/testkit/external"
++	"github.com/pingcap/tidb/pkg/testkit/testutil"
+ 	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
+ 	"github.com/pingcap/tidb/pkg/util/logutil"
+ 	"github.com/pingcap/tidb/pkg/util/set"
+@@ -310,7 +311,7 @@ func TestClusterSlowQuerySessionConnectAttrs(t *testing.T) {
+ # Digest: 42a1c8aae6f133e934d4bf0147491709a8812ea05ff8819ec522780fe657b772
+ # Is_internal: false
+ # Succ: true
+-# Session_connect_attrs: {"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}
++` + testutil.DefaultSessionConnectAttrsSlowLogLine() + `
+ select * from t;
+ `)
+ 	require.NoError(t, err)
+@@ -330,12 +331,7 @@ select * from t;
+ 		"where query = 'select * from t;'").Rows()
+ 	require.Len(t, rows, 1)
+ 	attrsStr := rows[0][0].(string)
+-	require.Contains(t, attrsStr, `"_client_name"`)
+-	require.Contains(t, attrsStr, `"Go-MySQL-Driver"`)
+-	require.Contains(t, attrsStr, `"_os"`)
+-	require.Contains(t, attrsStr, `"linux"`)
+-	require.Contains(t, attrsStr, `"app_name"`)
+-	require.Contains(t, attrsStr, `"test_app"`)
++	testutil.RequireContainsDefaultSessionConnectAttrs(t, attrsStr)
+ 
+ 	tk.MustQuery("select JSON_EXTRACT(Session_connect_attrs, '$._client_name') from information_schema.cluster_slow_query " +
+ 		"where query = 'select * from t;'").
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index 50da5ca8f5f81..fcd6ed5f2701e 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -307,6 +307,83 @@ func TestParseHandshakeResponse(t *testing.T) {
+ 	require.Equal(t, "test", p.DBName)
+ }
+ 
++func encodeLengthEncodedIntForHandshake(v uint64) []byte {
++	switch {
++	case v < 251:
++		return []byte{byte(v)}
++	case v < 1<<16:
++		return []byte{0xfc, byte(v), byte(v >> 8)}
++	case v < 1<<24:
++		return []byte{0xfd, byte(v), byte(v >> 8), byte(v >> 16)}
++	default:
++		return []byte{0xfe, byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24), byte(v >> 32), byte(v >> 40), byte(v >> 48), byte(v >> 56)}
++	}
++}
++
++func buildHandshakeResponsePacket(capability uint32, attrsPayload []byte, attrsLenOverride *uint64) []byte {
++	var buf bytes.Buffer
++	binary.Write(&buf, binary.LittleEndian, capability)
++	binary.Write(&buf, binary.LittleEndian, uint32(0)) // max packet size
++	buf.WriteByte(0)                                   // collation
++	buf.Write(make([]byte, 23))                        // reserved
++
++	buf.WriteString("root")
++	buf.WriteByte(0) // user null-terminated
++	buf.WriteByte(0) // auth null-terminated (legacy path)
++
++	if capability&mysql.ClientConnectAtts > 0 {
++		attrsLen := uint64(len(attrsPayload))
++		if attrsLenOverride != nil {
++			attrsLen = *attrsLenOverride
++		}
++		buf.Write(encodeLengthEncodedIntForHandshake(attrsLen))
++		buf.Write(attrsPayload)
++	}
++
++	return buf.Bytes()
++}
++
++func TestHandshakeResponseCompatibilityAndFailurePaths(t *testing.T) {
++	t.Run("legacy client without connect attrs capability", func(t *testing.T) {
++		data := buildHandshakeResponsePacket(mysql.ClientProtocol41, nil, nil)
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.NoError(t, err)
++		require.Equal(t, "root", p.User)
++		require.Empty(t, p.Attrs)
++	})
++
++	t.Run("malformed connect attrs length declaration", func(t *testing.T) {
++		attrsPayload := []byte{2, 'a', 'b', 2, 'c', 'd'}
++		declaredLen := uint64(len(attrsPayload) + 3)
++		data := buildHandshakeResponsePacket(mysql.ClientProtocol41|mysql.ClientConnectAtts, attrsPayload, &declaredLen)
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.ErrorIs(t, err, mysql.ErrMalformPacket)
++	})
++
++	t.Run("oversize connect attrs declaration rejected", func(t *testing.T) {
++		declaredLen := uint64(1<<20 + 1)
++		data := buildHandshakeResponsePacket(mysql.ClientProtocol41|mysql.ClientConnectAtts, nil, &declaredLen)
++
++		var p handshake.Response41
++		offset, err := parse.HandshakeResponseHeader(context.Background(), &p, data)
++		require.NoError(t, err)
++
++		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "connection refused: session connection attributes exceed the 1 MiB hard limit")
++	})
++}
++
+ func TestIssue1768(t *testing.T) {
+ 	// this data is from captured handshake packet, using mysql client.
+ 	// TiDB should handle authorization correctly, even mysql client set
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index 02b11c7d7466a..e9d79cc54e2a3 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -148,13 +148,13 @@ func HandshakeResponseBody(ctx context.Context, packet *handshake.Response41, da
+ 				return mysql.ErrMalformPacket
+ 			}
+ 			row := data[offset:end]
+-			attrs, warning, err := parseAttrs(row)
++			attrs, warningsText, err := parseAttrs(row)
+ 			if err != nil {
+ 				logutil.Logger(ctx).Warn("parse attrs failed", zap.Error(err))
+ 				return nil
+ 			}
+-			if warning != "" {
+-				logutil.Logger(ctx).Debug(warning)
++			if warningsText != "" {
++				logutil.Logger(ctx).Debug(warningsText)
+ 			}
+ 			packet.Attrs = attrs
+ 			offset += int(num) // Length of attributes
+@@ -181,48 +181,70 @@ var standardConnAttrs = map[string]struct{}{
+ 	"_platform":       {},
+ }
+ 
++type connAttrKV struct {
++	key   string
++	value string
++}
++
++type decodedConnAttrs struct {
++	items                       []connAttrKV
++	totalSize                   int64
++	hasDeprecatedUnderscoreAttr bool
++}
++
+ func parseAttrs(data []byte) (map[string]string, string, error) {
+-	attrs := make(map[string]string)
++	decoded, err := decodeConnAttrs(data)
++	if err != nil {
++		return map[string]string{}, "", err
++	}
++	attrs, warningsText := applyConnAttrsPolicyAndMetrics(decoded, vardef.ConnectAttrsSize.Load())
++	return attrs, warningsText, nil
++}
++
++func decodeConnAttrs(data []byte) (decodedConnAttrs, error) {
++	decoded := decodedConnAttrs{items: make([]connAttrKV, 0)}
+ 	pos := 0
+-	var totalSize int64
+-	var acceptedSize int64
+-	truncated := false
+-	hasDeprecatedUnderscoreAttr := false
+-	limit := vardef.ConnectAttrsSize.Load()
+ 
+ 	for pos < len(data) {
+ 		key, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+ 		if err != nil {
+-			return attrs, "", err
++			return decoded, err
+ 		}
+ 		pos += off
++
+ 		value, _, off, err := util2.ParseLengthEncodedBytes(data[pos:])
+ 		if err != nil {
+-			return attrs, "", err
++			return decoded, err
+ 		}
+ 		pos += off
+ 
+ 		keyStr := string(key)
++		valueStr := string(value)
++
++		decoded.items = append(decoded.items, connAttrKV{key: keyStr, value: valueStr})
++		decoded.totalSize += int64(len(key)) + int64(len(value))
+ 
+-		// Keep all client-provided keys (including underscore-prefixed MySQL
+-		// connector attributes). If truncation happens, server may overwrite
+-		// the reserved "_truncated" key for observability metadata.
+-		if !hasDeprecatedUnderscoreAttr && strings.HasPrefix(keyStr, "_") {
++		if !decoded.hasDeprecatedUnderscoreAttr && strings.HasPrefix(keyStr, "_") {
+ 			if _, ok := standardConnAttrs[keyStr]; !ok {
+-				hasDeprecatedUnderscoreAttr = true
++				decoded.hasDeprecatedUnderscoreAttr = true
+ 			}
+ 		}
++	}
+ 
+-		kvSize := int64(len(key)) + int64(len(value))
+-		totalSize += kvSize
++	return decoded, nil
++}
+ 
+-		// In MySQL, -1 means autosizing. We map it to a maximum of 64KB (65536)
+-		// to prevent unconstrained slow log bloating.
+-		effectiveLimit := limit
+-		if effectiveLimit < 0 {
+-			effectiveLimit = 65536
+-		}
++func applyConnAttrsPolicyAndMetrics(decoded decodedConnAttrs, limit int64) (map[string]string, string) {
++	attrs := make(map[string]string)
++	effectiveLimit := normalizeConnectAttrsLimit(limit)
++
++	var totalSize int64
++	var acceptedSize int64
++	truncated := false
+ 
++	for _, item := range decoded.items {
++		kvSize := int64(len(item.key)) + int64(len(item.value))
++		totalSize += kvSize
+ 		if totalSize > effectiveLimit {
+ 			if !truncated {
+ 				truncated = true
+@@ -230,46 +252,54 @@ func parseAttrs(data []byte) (map[string]string, string, error) {
+ 			}
+ 			continue
+ 		}
+-
+ 		if !truncated {
+-			attrs[keyStr] = string(value)
++			attrs[item.key] = item.value
+ 			acceptedSize += kvSize
+ 		}
+ 	}
+ 
+-	// Update LongestSeen only for normal-sized payloads (< 64 KiB).
+-	// Abnormally large payloads are still accepted (up to 1 MiB) but should
+-	// not skew this monitoring metric.
+-	if totalSize < 65536 {
+-		for {
+-			old := vardef.ConnectAttrsLongestSeen.Load()
+-			if totalSize <= old {
+-				break
+-			}
+-			if vardef.ConnectAttrsLongestSeen.CompareAndSwap(old, totalSize) {
+-				break
+-			}
+-		}
+-	}
++	updateConnectAttrsLongestSeen(decoded.totalSize)
+ 
+ 	warnings := make([]string, 0, 2)
+-	if hasDeprecatedUnderscoreAttr {
++	if decoded.hasDeprecatedUnderscoreAttr {
+ 		warnings = append(warnings,
+ 			"custom connection attributes with leading underscore are deprecated and will be rejected in a future release")
+ 	}
+ 	if truncated {
+-		// Calculate what limit was actually enforced
+-		effectiveLimit := limit
+-		if effectiveLimit < 0 {
+-			effectiveLimit = 65536
+-		}
+-
+-		truncatedBytes := totalSize - acceptedSize
++		truncatedBytes := decoded.totalSize - acceptedSize
+ 		attrs[reservedConnAttrTruncated] = strconv.FormatInt(truncatedBytes, 10)
+ 		warnings = append(warnings, fmt.Sprintf(
+ 			"session connection attributes truncated: total size %d bytes exceeds "+
+ 				"performance_schema_session_connect_attrs_size (%d), %d bytes were discarded",
+-			totalSize, effectiveLimit, truncatedBytes))
++			decoded.totalSize, effectiveLimit, truncatedBytes))
++	}
++	warningsText := strings.Join(warnings, "; ")
++	return attrs, warningsText
++}
++
++func normalizeConnectAttrsLimit(limit int64) int64 {
++	if limit < 0 {
++		// In MySQL, -1 means autosizing. We map it to a maximum of 64KB (65536)
++		// to prevent unconstrained slow log bloating.
++		return 65536
++	}
++	return limit
++}
++
++func updateConnectAttrsLongestSeen(totalSize int64) {
++	// Update LongestSeen only for normal-sized payloads (< 64 KiB).
++	// Abnormally large payloads are still accepted (up to 1 MiB) but should
++	// not skew this monitoring metric.
++	if totalSize >= 65536 {
++		return
++	}
++	for {
++		old := vardef.ConnectAttrsLongestSeen.Load()
++		if totalSize <= old {
++			break
++		}
++		if vardef.ConnectAttrsLongestSeen.CompareAndSwap(old, totalSize) {
++			break
++		}
+ 	}
+-	return attrs, strings.Join(warnings, "; "), nil
+ }
+diff --git a/pkg/sessionctx/vardef/sysvar.go b/pkg/sessionctx/vardef/sysvar.go
+index e08c413df4fd1..8b877eb775775 100644
+--- a/pkg/sessionctx/vardef/sysvar.go
++++ b/pkg/sessionctx/vardef/sysvar.go
+@@ -212,8 +212,8 @@ const (
+ 	LocalInFile = "local_infile"
+ 	// PerformanceSchema is the name for 'performance_schema' system variable.
+ 	PerformanceSchema = "performance_schema"
+-	// PerfSchemaSessionConnectAttrsSize is the name for 'performance_schema_session_connect_attrs_size' system variable.
+-	PerfSchemaSessionConnectAttrsSize = "performance_schema_session_connect_attrs_size"
++	// PerformanceSchemaSessionConnectAttrsSize is the name for 'performance_schema_session_connect_attrs_size' system variable.
++	PerformanceSchemaSessionConnectAttrsSize = "performance_schema_session_connect_attrs_size"
+ 	// Flush is the name for 'flush' system variable.
+ 	Flush = "flush"
+ 	// SlaveAllowBatching is the name for 'slave_allow_batching' system variable.
+diff --git a/pkg/sessionctx/variable/sysvar.go b/pkg/sessionctx/variable/sysvar.go
+index 2c304f8d29f80..9f8ef55e2f0fa 100644
+--- a/pkg/sessionctx/variable/sysvar.go
++++ b/pkg/sessionctx/variable/sysvar.go
+@@ -681,7 +681,7 @@ var defaultSysVars = []*SysVar{
+ 	}},
+ 
+ 	/* The system variables below have GLOBAL scope  */
+-	{Scope: vardef.ScopeGlobal, Name: vardef.PerfSchemaSessionConnectAttrsSize,
++	{Scope: vardef.ScopeGlobal, Name: vardef.PerformanceSchemaSessionConnectAttrsSize,
+ 		Value: strconv.FormatInt(vardef.DefConnectAttrsSize, 10),
+ 		Type:  vardef.TypeInt, MinValue: -1, MaxValue: 65536,
+ 		GetGlobal: func(_ context.Context, sv *SessionVars) (string, error) {
+diff --git a/pkg/sessionctx/variable/tests/session_test.go b/pkg/sessionctx/variable/tests/session_test.go
+index 08827dccea708..798aaa4299e7f 100644
+--- a/pkg/sessionctx/variable/tests/session_test.go
++++ b/pkg/sessionctx/variable/tests/session_test.go
+@@ -959,7 +959,7 @@ func TestTiDBOptPartialOrderedIndexForTopN(t *testing.T) {
+ 	require.False(t, vars.IsPartialOrderedIndexForTopNEnabled())
+ }
+ 
+-func TestPerfSchemaSessionConnectAttrsSizeGlobalSQL(t *testing.T) {
++func TestPerformanceSchemaSessionConnectAttrsSizeGlobalSQL(t *testing.T) {
+ 	store := testkit.CreateMockStore(t)
+ 	tk := testkit.NewTestKit(t, store)
+ 
+diff --git a/pkg/sessionctx/variable/tests/variable_test.go b/pkg/sessionctx/variable/tests/variable_test.go
+index e68b9264c3664..426719f88d097 100644
+--- a/pkg/sessionctx/variable/tests/variable_test.go
++++ b/pkg/sessionctx/variable/tests/variable_test.go
+@@ -170,8 +170,8 @@ func TestIntValidation(t *testing.T) {
+ 	require.Equal(t, "-1", val)
+ }
+ 
+-func TestPerfSchemaSessionConnectAttrsSizeValidation(t *testing.T) {
+-	sv := variable.GetSysVar(vardef.PerfSchemaSessionConnectAttrsSize)
++func TestPerformanceSchemaSessionConnectAttrsSizeValidation(t *testing.T) {
++	sv := variable.GetSysVar(vardef.PerformanceSchemaSessionConnectAttrsSize)
+ 	require.NotNil(t, sv)
+ 	require.True(t, sv.HasGlobalScope())
+ 	require.False(t, sv.HasSessionScope())
+diff --git a/pkg/testkit/testutil/require.go b/pkg/testkit/testutil/require.go
+index 165de9e761d2d..9454689fdf251 100644
+--- a/pkg/testkit/testutil/require.go
++++ b/pkg/testkit/testutil/require.go
+@@ -77,6 +77,28 @@ func CompareUnorderedStringSlice(a []string, b []string) bool {
+ 
+ var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+ 
++const defaultSessionConnectAttrsJSON = `{"_client_name":"Go-MySQL-Driver","_os":"linux","app_name":"test_app"}`
++
++// DefaultSessionConnectAttrsJSON returns the shared fixture JSON used in slow-log tests.
++func DefaultSessionConnectAttrsJSON() string {
++	return defaultSessionConnectAttrsJSON
++}
++
++// DefaultSessionConnectAttrsSlowLogLine returns the shared slow-log line for Session_connect_attrs fixture.
++func DefaultSessionConnectAttrsSlowLogLine() string {
++	return "# Session_connect_attrs: " + defaultSessionConnectAttrsJSON
++}
++
++// RequireContainsDefaultSessionConnectAttrs verifies the expected fixture keys/values are present.
++func RequireContainsDefaultSessionConnectAttrs(t testing.TB, attrsText string) {
++	require.Contains(t, attrsText, `"_client_name"`)
++	require.Contains(t, attrsText, `"Go-MySQL-Driver"`)
++	require.Contains(t, attrsText, `"_os"`)
++	require.Contains(t, attrsText, `"linux"`)
++	require.Contains(t, attrsText, `"app_name"`)
++	require.Contains(t, attrsText, `"test_app"`)
++}
++
+ // RandStringRunes generate random string of length n.
+ func RandStringRunes(n int) string {
+ 	b := make([]rune, n)
+
+From d5eaccc6dae1c7db38773c07a917335b86dd9dd8 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Tue, 10 Mar 2026 09:10:19 +0800
+Subject: [PATCH 06/11] pkg/executor,pkg/infoschema: add testutil bazel deps
+
+---
+ pkg/executor/BUILD.bazel                          | 1 +
+ pkg/infoschema/test/clustertablestest/BUILD.bazel | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/pkg/executor/BUILD.bazel b/pkg/executor/BUILD.bazel
+index 861779c14bee0..80b366ce9329b 100644
+--- a/pkg/executor/BUILD.bazel
++++ b/pkg/executor/BUILD.bazel
+@@ -499,6 +499,7 @@ go_test(
+         "//pkg/testkit/testfailpoint",
+         "//pkg/testkit/testmain",
+         "//pkg/testkit/testsetup",
++        "//pkg/testkit/testutil",
+         "//pkg/types",
+         "//pkg/util",
+         "//pkg/util/benchdaily",
+diff --git a/pkg/infoschema/test/clustertablestest/BUILD.bazel b/pkg/infoschema/test/clustertablestest/BUILD.bazel
+index ec50904092784..6849a702d8ffb 100644
+--- a/pkg/infoschema/test/clustertablestest/BUILD.bazel
++++ b/pkg/infoschema/test/clustertablestest/BUILD.bazel
+@@ -41,6 +41,7 @@ go_test(
+         "//pkg/testkit",
+         "//pkg/testkit/external",
+         "//pkg/testkit/testsetup",
++        "//pkg/testkit/testutil",
+         "//pkg/types",
+         "//pkg/util/dbterror/exeerrors",
+         "//pkg/util/gctuner",
+
+From 34dde238201c781cad23b8f4382b1bc84acebc9e Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Tue, 10 Mar 2026 15:07:39 +0800
+Subject: [PATCH 07/11] server: disable session attrs when connect attrs size
+ is 0
+
+---
+ pkg/server/conn_test.go            | 12 ++++--------
+ pkg/server/internal/parse/parse.go |  4 ++++
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/pkg/server/conn_test.go b/pkg/server/conn_test.go
+index fcd6ed5f2701e..982304aa985f7 100644
+--- a/pkg/server/conn_test.go
++++ b/pkg/server/conn_test.go
+@@ -2438,7 +2438,7 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		require.Equal(t, int64(8), vardef.ConnectAttrsLongestSeen.Load()) // 4+4=8
+ 	})
+ 
+-	t.Run("limit 0 truncates all attrs", func(t *testing.T) {
++	t.Run("limit 0 disables collection", func(t *testing.T) {
+ 		vardef.ConnectAttrsSize.Store(0)
+ 		vardef.ConnectAttrsLongestSeen.Store(0)
+ 		vardef.ConnectAttrsLost.Store(0)
+@@ -2470,13 +2470,9 @@ func TestParseHandshakeAttrsTruncation(t *testing.T) {
+ 		err = parse.HandshakeResponseBody(context.Background(), &p, data, offset)
+ 		require.NoError(t, err)
+ 
+-		// limit 0 means no payload bytes are allowed: everything is truncated.
+-		require.Len(t, p.Attrs, 1)
+-		val, ok := p.Attrs["_truncated"]
+-		require.True(t, ok)
+-		require.Equal(t, "4", val)
+-		require.Equal(t, int64(1), vardef.ConnectAttrsLost.Load())
+-		require.Equal(t, int64(4), vardef.ConnectAttrsLongestSeen.Load())
++		require.Len(t, p.Attrs, 0)
++		require.Equal(t, int64(0), vardef.ConnectAttrsLost.Load())
++		require.Equal(t, int64(0), vardef.ConnectAttrsLongestSeen.Load())
+ 	})
+ 
+ 	t.Run("limit 65536 acceptance", func(t *testing.T) {
+diff --git a/pkg/server/internal/parse/parse.go b/pkg/server/internal/parse/parse.go
+index e9d79cc54e2a3..b740679214065 100644
+--- a/pkg/server/internal/parse/parse.go
++++ b/pkg/server/internal/parse/parse.go
+@@ -193,6 +193,10 @@ type decodedConnAttrs struct {
+ }
+ 
+ func parseAttrs(data []byte) (map[string]string, string, error) {
++	if vardef.ConnectAttrsSize.Load() == 0 {
++		return map[string]string{}, "", nil
++	}
++
+ 	decoded, err := decodeConnAttrs(data)
+ 	if err != nil {
+ 		return map[string]string{}, "", err
+
+From 25c0682eef9d825b5ce8e77fea8246f859124a4b Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Wed, 11 Mar 2026 14:43:56 +0800
+Subject: [PATCH 08/11] pkg/infoschema: fix slow_query TestSlowQuery attrs
+ expectation
+
+---
+ pkg/infoschema/test/clustertablestest/tables_test.go | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/pkg/infoschema/test/clustertablestest/tables_test.go b/pkg/infoschema/test/clustertablestest/tables_test.go
+index 9fba4e4617c4d..4ed289d671992 100644
+--- a/pkg/infoschema/test/clustertablestest/tables_test.go
++++ b/pkg/infoschema/test/clustertablestest/tables_test.go
+@@ -496,6 +496,7 @@ func TestSlowQuery(t *testing.T) {
+ 			"60e9378c746d9a2be1c791047e008967cf252eb6de9167ad3aa6098fa2d523f4",
+ 			"",
+ 			"update t set i = 2;",
++			"null",
+ 			"select * from t_slim;",
+ 		},
+ 		{"2021-09-08 14:39:54.506967",
+@@ -589,7 +590,7 @@ func TestSlowQuery(t *testing.T) {
+ 			"",
+ 			"",
+ 			"",
+-			"",
++			"null",
+ 			"INSERT INTO ...;",
+ 		},
+ 	}
+
+From 9ea93a8a1b32bad4863138afbd4c5588d581e1c8 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Tue, 17 Mar 2026 17:33:41 +0800
+Subject: [PATCH 09/11] pkg/sessionctx/variable/tests: update bazel shard count
+
+---
+ pkg/sessionctx/variable/tests/BUILD.bazel | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pkg/sessionctx/variable/tests/BUILD.bazel b/pkg/sessionctx/variable/tests/BUILD.bazel
+index 1ab5c5bbcea34..f5d7dae694d96 100644
+--- a/pkg/sessionctx/variable/tests/BUILD.bazel
++++ b/pkg/sessionctx/variable/tests/BUILD.bazel
+@@ -9,7 +9,7 @@ go_test(
+         "variable_test.go",
+     ],
+     flaky = True,
+-    shard_count = 45,
++    shard_count = 46,
+     deps = [
+         "//pkg/config",
+         "//pkg/executor",
+
+From 8907a87299b39ad2246433907b9b294b93bf50b1 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Mon, 23 Mar 2026 23:17:57 +0800
+Subject: [PATCH 10/11] pkg/sessionctx/variable/tests: update bazel shard count
+ after rebase
+
+---
+ pkg/sessionctx/variable/tests/BUILD.bazel | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pkg/sessionctx/variable/tests/BUILD.bazel b/pkg/sessionctx/variable/tests/BUILD.bazel
+index f5d7dae694d96..e28dc05617411 100644
+--- a/pkg/sessionctx/variable/tests/BUILD.bazel
++++ b/pkg/sessionctx/variable/tests/BUILD.bazel
+@@ -9,7 +9,7 @@ go_test(
+         "variable_test.go",
+     ],
+     flaky = True,
+-    shard_count = 46,
++    shard_count = 47,
+     deps = [
+         "//pkg/config",
+         "//pkg/executor",
+
+From 871eecf3f35af6c890055f0d43ecea7cc67f24e0 Mon Sep 17 00:00:00 2001
+From: jiong-nba <2301210292@stu.pku.edu.cn>
+Date: Tue, 24 Mar 2026 02:13:27 +0800
+Subject: [PATCH 11/11] pkg/infoschema: fix slow query session attrs
+ expectation
+
+---
+ pkg/infoschema/test/clustertablestest/tables_test.go | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/pkg/infoschema/test/clustertablestest/tables_test.go b/pkg/infoschema/test/clustertablestest/tables_test.go
+index 4ed289d671992..fdb1fbcc3744c 100644
+--- a/pkg/infoschema/test/clustertablestest/tables_test.go
++++ b/pkg/infoschema/test/clustertablestest/tables_test.go
+@@ -590,6 +590,7 @@ func TestSlowQuery(t *testing.T) {
+ 			"",
+ 			"",
+ 			"",
++			"",
+ 			"null",
+ 			"INSERT INTO ...;",
+ 		},

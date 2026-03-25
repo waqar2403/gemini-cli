@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "instance_id": "home-assistant__core-161974",
+  "repo": {
+    "full_name": "home-assistant/core",
+    "url": "https://github.com/home-assistant/core",
+    "base_commit": "7140826dbbbe445d4e4cfac37a28111ccac01103",
+    "primary_language": "Python",
+    "languages": [
+      "Python"
+    ]
+  },
+  "problem": {
+    "statement": "### The problem\n\nIn a previous version of Home Assistant, any UserLabel/FixedLabel called \"Label\" was used to label an entity. This was replaced with VENDOR_LABELING_LIST, where label names are specified per VID and PID, allowing for more flexibility. The drawback of this is that it forces a Matter device to register for a VID, which is extremely costly.\n\nFor anyone building Matter devices as a hobby, getting a VID is sadly not feasible. I propose we add a fallback to labels named \"label\", in case the device's VID is not in the VENDOR_LABELING_LIST. This would allow both devices with a proper VID, and devices with a generic test VID, to label their entities correctly.\n\nThe alternative solution is to add test VID/PID to the VENDOR_LABELING_LIST, but since many devices could share the same VID/PID it could get messy. \n\n### What version of Home Assistant Core has the issue?\n\ncore-2026.1.3\n\n### What was the last working version of Home Assistant Core?\n\n_No response_\n\n### What type of installation are you running?\n\nHome Assistant OS\n\n### Integration causing the issue\n\nMatter\n\n### Link to integration documentation on our website\n\nhttps://www.home-assistant.io/integrations/matter/\n\n### Diagnostics information\n\n[matter-01JXJS3MZXQBWSWMPEVXP6KBGS-Presence One-677e0612e657898d66f0aa3d738c8741.json](https://github.com/user-attachments/files/25080662/matter-01JXJS3MZXQBWSWMPEVXP6KBGS-Presence.One-677e0612e657898d66f0aa3d738c8741.json)\n\n### Example YAML snippet\n\n```yaml\n\n```\n\n### Anything in the logs that might be useful for us?\n\n```txt\nThe device in the logs has a VID of 65521 (0xFFF1). This is a device I'm building myself, so it's not generally available (yet). I'm aware that some clusters might not be configured according to Matter specifications, but it doesn't affect this issue. \n```\n\n### Additional information\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/home-assistant/core/issues/162175",
+    "source_id": 162175
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "homeassistant/components/matter/entity.py",
+      "tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json",
+      "tests/components/matter/snapshots/test_event.ambr",
+      "tests/components/matter/snapshots/test_sensor.ambr",
+      "tests/components/matter/test_event.py"
+    ],
+    "affected_directories": [
+      "homeassistant/components/matter",
+      "tests/components/matter",
+      "tests/components/matter/fixtures/nodes",
+      "tests/components/matter/snapshots"
+    ],
+    "files_changed": 5,
+    "directories_changed": 4,
+    "insertions": 29,
+    "deletions": 25,
+    "test_files_changed": [
+      "tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json",
+      "tests/components/matter/snapshots/test_event.ambr",
+      "tests/components/matter/snapshots/test_sensor.ambr",
+      "tests/components/matter/test_event.py"
+    ],
+    "source_files_changed": [
+      "homeassistant/components/matter/entity.py"
+    ]
+  },
+  "provenance": {
+    "pr_number": 161974,
+    "pr_url": "https://github.com/home-assistant/core/pull/161974",
+    "pr_title": "Allow test vendor IDs to set Matter label",
+    "pr_merged_at": "2026-03-25T11:23:45Z",
+    "issue_number": 162175,
+    "issue_url": "https://github.com/home-assistant/core/issues/162175",
+    "issue_created_at": "2026-02-03T20:32:17Z",
+    "issue_labels": [
+      "integration: matter",
+      "waiting-for-diagnostics"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 5,
+    "directories_changed": 4,
+    "cross_package": false,
+    "insertions": 29,
+    "deletions": 25,
+    "dependency_depth": 1,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 7.9
+  },
+  "contamination": {
+    "issue_created_at": "2026-02-03T20:32:17Z",
+    "pr_merged_at": "2026-03-25T11:23:45Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json",
+      "tests/components/matter/snapshots/test_event.ambr",
+      "tests/components/matter/snapshots/test_sensor.ambr",
+      "tests/components/matter/test_event.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "homeassistant/components/matter/entity.py",
+      "tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json",
+      "tests/components/matter/snapshots/test_event.ambr",
+      "tests/components/matter/snapshots/test_sensor.ambr",
+      "tests/components/matter/test_event.py"
+    ],
+    "dependency_chain": [
+      "homeassistant/components/matter/entity.py"
+    ],
+    "min_context_tokens": 10000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

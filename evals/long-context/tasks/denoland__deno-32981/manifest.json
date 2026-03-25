@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "instance_id": "denoland__deno-32981",
+  "repo": {
+    "full_name": "denoland/deno",
+    "url": "https://github.com/denoland/deno",
+    "base_commit": "2186d72c3068f0beaab1cad662cf7c1c9ebef2f5",
+    "primary_language": "JavaScript",
+    "languages": [
+      "JavaScript",
+      "Rust",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "Version: deno --version\ndeno 2.7.7+e7eb863 (canary, release, x86_64-unknown-linux-gnu)\n\n\nit happens from time to time and its annoying when it happens because you might not notice you're running an old version of a pkg\n\nTo reproduce (not sure its 100% reproducible)\n- deno i -gfA npm:opencode-ai\n- deno run --allow-all --config /home/mrcool/.deno/bin/.opencode/deno.json npm:opencode-ai --version # works\n\nnow trying any other version , deno ignore it and jst use the cachezd one\n- deno run --allow-all --config /home/mrcool/.deno/bin/.opencode/deno.json npm:opencode-ai@1.3.5 --version\n- deno run --allow-all --config /home/mrcool/.deno/bin/.opencode/deno.json npm:opencode-ai@1.3.6 --version\n\nboth of these ignore the version i specified and use the cached version, if I remove --config part it works correctly\n\nthe config have this\n\n```\ncat /home/mrcool/.deno/bin/.opencode/deno.json\n{\n  \"workspace\": [],\n  \"nodeModulesDir\": \"manual\"\n}\n```",
+    "source": "issue",
+    "source_url": "https://github.com/denoland/deno/issues/32972",
+    "source_id": 32972
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "libs/resolver/npm/byonm.rs",
+      "tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc",
+      "tests/specs/npm/byonm_version_mismatch_fallback/deno.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/main.ts",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/package.json"
+    ],
+    "affected_directories": [
+      "libs/resolver/npm",
+      "tests/specs/npm/byonm_version_mismatch_fallback",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add"
+    ],
+    "files_changed": 11,
+    "directories_changed": 5,
+    "insertions": 63,
+    "deletions": 16,
+    "test_files_changed": [
+      "tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc",
+      "tests/specs/npm/byonm_version_mismatch_fallback/deno.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/main.ts",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/package.json"
+    ],
+    "source_files_changed": [
+      "libs/resolver/npm/byonm.rs"
+    ]
+  },
+  "provenance": {
+    "pr_number": 32981,
+    "pr_url": "https://github.com/denoland/deno/pull/32981",
+    "pr_title": "fix(resolver): fall through to .deno/ when BYONM node_modules version mismatches",
+    "pr_merged_at": "2026-03-25T12:29:52Z",
+    "issue_number": 32972,
+    "issue_url": "https://github.com/denoland/deno/issues/32972",
+    "issue_created_at": "2026-03-25T02:33:16Z",
+    "issue_labels": []
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation",
+      "error-handling-chain"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 11,
+    "directories_changed": 5,
+    "cross_package": false,
+    "insertions": 63,
+    "deletions": 16,
+    "dependency_depth": 1,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 13.4
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-25T02:33:16Z",
+    "pr_merged_at": "2026-03-25T12:29:52Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "rust",
+    "runtime_version": "1.77",
+    "package_manager": "cargo",
+    "install_command": "cargo fetch",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "cargo test",
+    "fail_to_pass": [
+      "tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc",
+      "tests/specs/npm/byonm_version_mismatch_fallback/deno.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/main.ts",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/package.json"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "libs/resolver/npm/byonm.rs",
+      "tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc",
+      "tests/specs/npm/byonm_version_mismatch_fallback/deno.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/main.ts",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js",
+      "tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json",
+      "tests/specs/npm/byonm_version_mismatch_fallback/package.json"
+    ],
+    "dependency_chain": [
+      "libs/resolver/npm/byonm.rs"
+    ],
+    "min_context_tokens": 22000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

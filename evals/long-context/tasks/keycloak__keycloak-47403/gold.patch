@@ -1,0 +1,2312 @@
+From 1bb62a69e5db0615fe9f3985507da94998d40151 Mon Sep 17 00:00:00 2001
+From: stianst <stianst@gmail.com>
+Date: Tue, 24 Mar 2026 13:28:56 +0100
+Subject: [PATCH] Migrate events package to test framework
+
+Closes #47401
+
+Signed-off-by: stianst <stianst@gmail.com>
+---
+ .../common/CustomProvidersServerConfig.java   |  13 +
+ .../events/AdminEventStoreProviderTest.java   | 336 +++++++++++++++++
+ .../events/EventMetricsProviderTest.java      |  76 ++++
+ .../EventMetricsProviderWithTagsTest.java     | 102 +++++
+ .../tests/events/EventRunOnServerHelper.java  | 332 ++++++++++++++++
+ .../tests/events/EventStoreProviderTest.java  | 350 +++++++++++++++++
+ .../keycloak/tests/suites/Base2TestSuite.java |   1 +
+ ...ListenerContextDetailsProviderFactory.java |  52 +++
+ ...ycloak.events.EventListenerProviderFactory |   1 +
+ .../testsuite/events/AbstractEventsTest.java  |  66 ----
+ .../events/AdminEventStoreProviderTest.java   | 314 ---------------
+ .../events/EventMetricsProviderTest.java      | 167 --------
+ .../events/EventStoreProviderTest.java        | 356 ------------------
+ .../tests/base/testsuites/base-suite          |   1 -
+ .../tests/base/testsuites/database-suite      |   1 -
+ 15 files changed, 1263 insertions(+), 905 deletions(-)
+ create mode 100644 tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java
+ create mode 100644 tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java
+ create mode 100755 tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java
+ create mode 100755 tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java
+ create mode 100644 tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java
+ create mode 100755 tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java
+ create mode 100644 tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java
+ create mode 100644 tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory
+ delete mode 100644 testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java
+ delete mode 100644 testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java
+ delete mode 100755 testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java
+ delete mode 100755 testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java
+
+diff --git a/tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java b/tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java
+new file mode 100644
+index 000000000000..61227a2e0e59
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java
+@@ -0,0 +1,13 @@
++package org.keycloak.tests.common;
++
++import org.keycloak.testframework.server.KeycloakServerConfig;
++import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
++
++public class CustomProvidersServerConfig implements KeycloakServerConfig {
++
++    @Override
++    public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
++        return config.dependency("org.keycloak.tests", "keycloak-tests-custom-providers");
++    }
++
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java b/tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java
+new file mode 100644
+index 000000000000..fb9a5ba6f2dd
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java
+@@ -0,0 +1,336 @@
++/*
++ * Copyright 2016 Red Hat, Inc. and/or its affiliates
++ * and other contributors as indicated by the @author tags.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.keycloak.tests.events;
++
++import java.text.ParseException;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.List;
++
++import org.keycloak.events.admin.OperationType;
++import org.keycloak.models.jpa.entities.RealmAttributes;
++import org.keycloak.representations.idm.AdminEventRepresentation;
++import org.keycloak.representations.idm.AuthDetailsRepresentation;
++import org.keycloak.testframework.annotations.InjectRealm;
++import org.keycloak.testframework.annotations.KeycloakIntegrationTest;
++import org.keycloak.testframework.realm.ManagedRealm;
++import org.keycloak.testframework.realm.RealmConfig;
++import org.keycloak.testframework.realm.RealmConfigBuilder;
++import org.keycloak.testframework.remote.runonserver.InjectRunOnServer;
++import org.keycloak.testframework.remote.runonserver.RunOnServerClient;
++import org.keycloak.testframework.remote.timeoffset.InjectTimeOffSet;
++import org.keycloak.testframework.remote.timeoffset.TimeOffSet;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Assertions;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++@KeycloakIntegrationTest
++public class AdminEventStoreProviderTest {
++
++    @InjectRealm(config = AdminEventStoreProviderTest.AdminEventStoreRealm.class)
++    ManagedRealm realm1;
++
++    @InjectRealm(ref = "realm2", config = AdminEventStoreProviderTest.AdminEventStoreRealm.class)
++    ManagedRealm realm2;
++
++    @InjectRunOnServer
++    RunOnServerClient runOnServer;
++
++    @InjectTimeOffSet
++    TimeOffSet timeOffSet;
++
++    EventRunOnServerHelper eventHelper;
++
++    @BeforeEach
++    public void setup() {
++        eventHelper = new EventRunOnServerHelper(runOnServer);
++        eventHelper.clearAdminEvents(realm1.getId(), realm2.getId());
++    }
++
++    @AfterEach
++    public void after() {
++        eventHelper.clearAdminEvents(realm1.getId(), realm2.getId());
++    }
++
++    @Test
++    public void save() {
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++    }
++
++    @Test
++    public void query() {
++        long oldest = System.currentTimeMillis() - 30000;
++        long newest = System.currentTimeMillis() + 30000;
++
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(newest, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(newest, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(realm2.getId(), OperationType.CREATE, realm2.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(oldest, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId2", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), null, null, "clientId", null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, "clientId", null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(3, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.CREATE), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), List.of(OperationType.CREATE), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), List.of(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(3, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, "userId", null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, "userId", null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.ACTION), null, null, "userId", null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), List.of(OperationType.ACTION), null, null, "userId", null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, 2).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, 4, null).length);
++
++        Assertions.assertEquals(newest, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, 1)[0].getTime());
++        Assertions.assertEquals(oldest, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, 4, 1)[0].getTime());
++
++        eventHelper.clearAdminEvents(realm1.getId(), realm2.getId());
++
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, null, null, null).length);
++
++        String d04 = "2015-03-04";
++        String d05 = "2015-03-05";
++        String d06 = "2015-03-06";
++        String d07 = "2015-03-07";
++
++        String d01 = "2015-03-01";
++        String d03 = "2015-03-03";
++        String d08 = "2015-03-08";
++        String d10 = "2015-03-10";
++
++        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
++        Date date04 = null, date05 = null, date06 = null, date07 = null;
++
++        try {
++            date04 = formatter.parse(d04);
++            date05 = formatter.parse(d05);
++            date06 = formatter.parse(d06);
++            date07 = formatter.parse(d07);
++        } catch (ParseException e) {
++            e.printStackTrace();
++        }
++
++        eventHelper.storeEvent(create(date04, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date04, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date05, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date05, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date06, realm1.getId(), OperationType.UPDATE, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date06, realm1.getId(), OperationType.DELETE, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date07, realm2.getId(), OperationType.CREATE, realm2.getId(), "clientId2", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(date07, realm2.getId(), OperationType.CREATE, realm2.getId(), "clientId2", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        Assertions.assertEquals(6, eventHelper.queryAdminEvents(realm1.getId(), null, null, "clientId", null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, "clientId", null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, "clientId2", null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, "clientId2", null, null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(6, eventHelper.queryAdminEvents(realm1.getId(), null, realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, realm2.getId(), null, null, null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, "userId", null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, "userId2", null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, "userId2", null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.ACTION), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), List.of(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.UPDATE), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.DELETE), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), List.of(OperationType.CREATE), null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), List.of(OperationType.CREATE), null, null, null, null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(6, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d04, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d04, null, null, null).length);
++        Assertions.assertEquals(6, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, d07, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, d07, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d06, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, d05, null, null).length);
++
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d08, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, d03, null, null).length);
++
++        Assertions.assertEquals(6, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d04, d07, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d04, d07, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d05, d07, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d05, d07, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d04, d05, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d06, d07, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d06, d07, null, null).length);
++
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d01, d03, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d01, d03, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, d08, d10, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, d08, d10, null, null).length);
++
++    }
++
++    @Test
++    public void queryResourcePath() {
++        long oldest = System.currentTimeMillis() - 30000;
++        long newest = System.currentTimeMillis() + 30000;
++
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(newest, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(newest, realm1.getId(), OperationType.ACTION, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(realm2.getId(), OperationType.CREATE, realm2.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(oldest, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId2", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "/admin/*", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "*/realms/*", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "*/master", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "/admin/realms/*", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "*/realms/master", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "/admin/*/master", null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, "/ad*/*/master", null, null, null, null).length);
++
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "/admin/*", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "*/realms/*", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "*/master", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "/admin/realms/*", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "*/realms/master", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "/admin/*/master", null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, "/ad*/*/master", null, null, null, null).length);
++    }
++
++    @Test
++    public void clear() {
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 20000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm2.getId(), OperationType.CREATE, realm2.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        eventHelper.clearAdminEvents(realm1.getId());
++
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, null, null, null).length);
++    }
++
++    @Test
++    public void clearOld() {
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 20000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        eventHelper.clearAdminEvents(realm1.getId(), System.currentTimeMillis() - 10000);
++        eventHelper.clearAdminEvents(realm2.getId(), System.currentTimeMillis() - 10000);
++
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++    }
++
++    @Test
++    public void expireOld() {
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 20000, realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, realm2.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++        eventHelper.storeEvent(create(System.currentTimeMillis(), realm2.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
++
++        // Set expiration of events for realm1.getId() .
++        realm1.updateWithCleanup(r -> {
++            r.attribute(RealmAttributes.ADMIN_EVENTS_EXPIRATION, "10");
++            return r;
++        });
++
++        // The first 2 events from realm1.getId() will be deleted
++        eventHelper.clearExpiredEvents();
++
++        Assertions.assertEquals(3, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, null, null, null).length);
++
++        // Set expiration of events for realm2.getId() as well
++        realm2.updateWithCleanup(r -> {
++            r.attribute(RealmAttributes.ADMIN_EVENTS_EXPIRATION, "10");
++            return r;
++        });
++
++        // The first event from realm2.getId() will be deleted now
++        eventHelper.clearExpiredEvents();
++        Assertions.assertEquals(3, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, null, null, null).length);
++
++        // set time offset to the future. The remaining 2 events from realm1.getId() and 1 event from realm2.getId() should be expired now
++        timeOffSet.set(150);
++        eventHelper.clearExpiredEvents();
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm1.getId(), null, null, null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryAdminEvents(realm2.getId(), null, null, null, null, null, null, null, null, null, null).length);
++    }
++
++    @Test
++    public void handleCustomResourceTypeEvents() {
++        eventHelper.storeEvent(create(realm1.getId(), OperationType.CREATE, realm1.getId(), "clientId", "userId", "127.0.0.1", "/admin/realms/master", "my-custom-resource", "error"), false);
++
++        AdminEventRepresentation[] adminEvents = eventHelper.queryAdminEvents(realm1.getId(), null, null, "clientId", null, null, null, null, null, null, null);
++        Assertions.assertEquals(1, adminEvents.length);
++        Assertions.assertEquals("my-custom-resource", adminEvents[0].getResourceType());
++    }
++
++    private AdminEventRepresentation create(String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
++        return create(System.currentTimeMillis(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, error);
++    }
++
++    private AdminEventRepresentation create(String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String resourceType, String error) {
++        return create(System.currentTimeMillis(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, resourceType, error);
++    }
++
++    private AdminEventRepresentation create(Date date, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
++        return create(date.getTime(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, error);
++    }
++
++    private AdminEventRepresentation create(long time, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
++        return create(time, realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, null, error);
++    }
++
++    private AdminEventRepresentation create(long time, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String resourceType, String error) {
++        AdminEventRepresentation e = new AdminEventRepresentation();
++        e.setTime(time);
++        e.setRealmId(realmId);
++        e.setOperationType(operation.toString());
++        AuthDetailsRepresentation authDetails = new AuthDetailsRepresentation();
++        authDetails.setRealmId(authRealmId);
++        authDetails.setClientId(authClientId);
++        authDetails.setUserId(authUserId);
++        authDetails.setIpAddress(authIpAddress);
++        e.setAuthDetails(authDetails);
++        e.setResourcePath(resourcePath);
++        e.setResourceType(resourceType);
++        e.setError(error);
++
++        return e;
++    }
++
++    private static final class AdminEventStoreRealm implements RealmConfig {
++
++        @Override
++        public RealmConfigBuilder configure(RealmConfigBuilder realm) {
++            return realm.adminEventsEnabled(true);
++        }
++    }
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java b/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java
+new file mode 100755
+index 000000000000..f03f68b471ca
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java
+@@ -0,0 +1,76 @@
++/*
++ * Copyright 2024 Red Hat, Inc. and/or its affiliates
++ * and other contributors as indicated by the @author tags.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.keycloak.tests.events;
++
++import org.keycloak.events.EventBuilder;
++import org.keycloak.events.EventType;
++import org.keycloak.models.RealmModel;
++import org.keycloak.testframework.annotations.InjectRealm;
++import org.keycloak.testframework.annotations.KeycloakIntegrationTest;
++import org.keycloak.testframework.realm.ManagedRealm;
++import org.keycloak.testframework.remote.runonserver.InjectRunOnServer;
++import org.keycloak.testframework.remote.runonserver.RunOnServerClient;
++import org.keycloak.testframework.server.KeycloakServerConfig;
++import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
++
++import io.micrometer.core.instrument.Metrics;
++import org.hamcrest.MatcherAssert;
++import org.junit.jupiter.api.Test;
++
++/**
++ * @author aschwart
++ */
++@KeycloakIntegrationTest(config = EventMetricsProviderTest.EventMetricsServerConfig.class)
++public class EventMetricsProviderTest {
++
++    @InjectRealm
++    ManagedRealm realm;
++
++    @InjectRunOnServer
++    RunOnServerClient runOnServer;
++
++    private final static String CLIENT_ID = "CLIENT_ID";
++
++    @Test
++    public void shouldCountSingleEventWithTagsAndFilter() {
++        String realmName = realm.getName();
++
++        runOnServer.run(session -> {
++            RealmModel realm = session.getContext().getRealm();
++            EventBuilder eventBuilder = new EventBuilder(realm, session);
++            eventBuilder.event(EventType.LOGIN)
++                            .client(CLIENT_ID);
++            eventBuilder.success();
++        });
++
++        runOnServer.run(session -> {
++            MatcherAssert.assertThat("Searching for metrics match in " + Metrics.globalRegistry.find("keycloak.user").meters(),
++                    Metrics.globalRegistry.counter("keycloak.user", "event", "login", "error", "", "realm", realmName).count() == 1);
++        });
++    }
++
++    public static class EventMetricsServerConfig implements KeycloakServerConfig {
++
++        @Override
++        public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
++            return config.option("metrics-enabled", "true")
++                    .option("event-metrics-user-enabled", "true");
++        }
++    }
++
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java b/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java
+new file mode 100755
+index 000000000000..ce727da7d264
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java
+@@ -0,0 +1,102 @@
++/*
++ * Copyright 2024 Red Hat, Inc. and/or its affiliates
++ * and other contributors as indicated by the @author tags.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.keycloak.tests.events;
++
++import org.keycloak.events.Details;
++import org.keycloak.events.Errors;
++import org.keycloak.events.EventBuilder;
++import org.keycloak.events.EventType;
++import org.keycloak.models.RealmModel;
++import org.keycloak.testframework.annotations.InjectRealm;
++import org.keycloak.testframework.annotations.KeycloakIntegrationTest;
++import org.keycloak.testframework.realm.ManagedRealm;
++import org.keycloak.testframework.remote.runonserver.InjectRunOnServer;
++import org.keycloak.testframework.remote.runonserver.RunOnServerClient;
++import org.keycloak.testframework.server.KeycloakServerConfig;
++import org.keycloak.testframework.server.KeycloakServerConfigBuilder;
++
++import io.micrometer.core.instrument.Metrics;
++import org.hamcrest.MatcherAssert;
++import org.hamcrest.Matchers;
++import org.junit.jupiter.api.Test;
++
++/**
++ * @author aschwart
++ */
++@KeycloakIntegrationTest(config = EventMetricsProviderWithTagsTest.EventMetricsServerConfig.class)
++public class EventMetricsProviderWithTagsTest {
++
++    @InjectRealm
++    ManagedRealm realm;
++
++    @InjectRunOnServer
++    RunOnServerClient runOnServer;
++
++    private final static String CLIENT_ID = "CLIENT_ID";
++
++    @Test
++    public void shouldCountSingleEventWithTagsAndFilter() {
++        String realmName = realm.getName();
++
++        runOnServer.run(session -> {
++            RealmModel realm = session.getContext().getRealm();
++
++            // this event is not recorded as a metric as the event is not listed in the configuration
++            EventBuilder eventBuilder = new EventBuilder(realm, session);
++            eventBuilder.event(EventType.LOGOUT)
++                    .client(CLIENT_ID)
++                    .detail(Details.IDENTITY_PROVIDER, "IDENTITY_PROVIDER");
++            eventBuilder.success();
++
++            // this event is recorded as an error
++            eventBuilder = new EventBuilder(realm, session);
++            eventBuilder.event(EventType.LOGIN)
++                    .client(CLIENT_ID)
++                    .detail(Details.IDENTITY_PROVIDER, "IDENTITY_PROVIDER");
++            eventBuilder.error("ERROR");
++
++            // this event is recorded with the special logic about not found clients
++            eventBuilder = new EventBuilder(realm, session);
++            eventBuilder.event(EventType.REFRESH_TOKEN)
++                    .client(CLIENT_ID);
++            eventBuilder.error(Errors.CLIENT_NOT_FOUND);
++
++        });
++
++        runOnServer.run(session -> {
++            MatcherAssert.assertThat("Two metrics recorded",
++                    Metrics.globalRegistry.find("keycloak.user").meters().size(), Matchers.equalTo(2));
++            MatcherAssert.assertThat("Searching for login error metric",
++                    Metrics.globalRegistry.counter("keycloak.user", "event", "login", "error", "ERROR", "realm", realmName, "client.id", CLIENT_ID, "idp", "IDENTITY_PROVIDER").count() == 1);
++            MatcherAssert.assertThat("Searching for refresh with unknown client",
++                    Metrics.globalRegistry.counter("keycloak.user", "event", "refresh_token", "error", "client_not_found", "realm", realmName, "client.id", "unknown", "idp", "").count() == 1);
++        });
++    }
++
++    public static class EventMetricsServerConfig implements KeycloakServerConfig {
++
++        @Override
++        public KeycloakServerConfigBuilder configure(KeycloakServerConfigBuilder config) {
++            return config.option("metrics-enabled", "true")
++                    .option("event-metrics-user-enabled", "true")
++                    .option("event-metrics-user-tags", "realm,idp,clientId")
++                    .option("event-metrics-user-events", "login,refresh_token");
++        }
++    }
++
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java b/tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java
+new file mode 100644
+index 000000000000..ffd031df4268
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java
+@@ -0,0 +1,332 @@
++package org.keycloak.tests.events;
++
++import java.io.Serializable;
++import java.text.ParseException;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.List;
++import java.util.UUID;
++
++import jakarta.ws.rs.BadRequestException;
++
++import org.keycloak.events.Event;
++import org.keycloak.events.EventQuery;
++import org.keycloak.events.EventStoreProvider;
++import org.keycloak.events.EventType;
++import org.keycloak.events.admin.AdminEvent;
++import org.keycloak.events.admin.AdminEventQuery;
++import org.keycloak.events.admin.AuthDetails;
++import org.keycloak.events.admin.OperationType;
++import org.keycloak.models.utils.ModelToRepresentation;
++import org.keycloak.representations.idm.AdminEventRepresentation;
++import org.keycloak.representations.idm.EventRepresentation;
++import org.keycloak.storage.datastore.PeriodicEventInvalidation;
++import org.keycloak.testframework.remote.providers.runonserver.FetchOnServer;
++import org.keycloak.testframework.remote.providers.runonserver.FetchOnServerWrapper;
++import org.keycloak.testframework.remote.runonserver.RunOnServerClient;
++import org.keycloak.util.JsonSerialization;
++
++public class EventRunOnServerHelper {
++
++    private final RunOnServerClient runOnServer;
++
++    public EventRunOnServerHelper(RunOnServerClient runOnServer) {
++        this.runOnServer = runOnServer;
++    }
++
++    public void storeEvent(EventRepresentation event) {
++        String serialized = JsonSerialization.valueAsString(event);
++        runOnServer.run(session -> {
++            EventRepresentation rep = JsonSerialization.readValue(serialized, EventRepresentation.class);
++            Event e = new Event();
++            e.setId(UUID.randomUUID().toString());
++            e.setClientId(rep.getClientId());
++            e.setDetails(rep.getDetails());
++            e.setError(rep.getError());
++            e.setIpAddress(rep.getIpAddress());
++            e.setRealmId(rep.getRealmId());
++            e.setSessionId(rep.getSessionId());
++            e.setTime(rep.getTime());
++            e.setType(EventType.valueOf(rep.getType()));
++            e.setUserId(rep.getUserId());
++
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            eventStore.onEvent(e);
++        });
++    }
++
++    public void storeEvent(AdminEventRepresentation event, boolean includeRepresentation) {
++        String serialized = JsonSerialization.valueAsString(event);
++        runOnServer.run(session -> {
++            AdminEventRepresentation rep = JsonSerialization.readValue(serialized, AdminEventRepresentation.class);
++            AdminEvent e = new AdminEvent();
++            e.setId(UUID.randomUUID().toString());
++
++            AuthDetails details = new AuthDetails();
++            details.setClientId(rep.getAuthDetails().getClientId());
++            details.setIpAddress(rep.getAuthDetails().getIpAddress());
++            details.setRealmId(rep.getAuthDetails().getRealmId());
++            details.setUserId(rep.getAuthDetails().getUserId());
++            e.setAuthDetails(details);
++
++            e.setError(rep.getError());
++            e.setOperationType(OperationType.valueOf(rep.getOperationType()));
++            if (rep.getResourceType() != null) {
++                e.setResourceTypeAsString(rep.getResourceType());
++            }
++            e.setRealmId(rep.getRealmId());
++            e.setRepresentation(rep.getRepresentation());
++            e.setResourcePath(rep.getResourcePath());
++            e.setTime(rep.getTime());
++
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            eventStore.onEvent(e, includeRepresentation);
++        });
++    }
++
++    public EventRepresentation[] queryEvents(String realmId, List<EventType> types, String client,
++                                             String user, String dateFrom, String dateTo,
++                                             String ipAddress, Integer firstResult,
++                                             Integer maxResults) {
++        return runOnServer.fetch(new QueryHelper(realmId, types, client, user, dateFrom, dateTo, ipAddress, firstResult, maxResults));
++    }
++
++    public AdminEventRepresentation[] queryAdminEvents(String realmId, List<OperationType> operationTypes, String authRealm, String authClient,
++                                                       String authUser, String authIpAddress,
++                                                       String resourcePath, String dateFrom,
++                                                       String dateTo, Integer firstResult,
++                                                       Integer maxResults) {
++        return runOnServer.fetch(new AdminQueryHelper(realmId, operationTypes, authRealm, authClient, authUser, authIpAddress, resourcePath, dateFrom, dateTo, firstResult, maxResults));
++    }
++
++    public void clearEvents(String... realmIds) {
++        runOnServer.run(session -> {
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            for (String realmId : realmIds) {
++                eventStore.clear(session.realms().getRealm(realmId));
++            }
++        });
++    }
++
++    public void clearAdminEvents(String... realmIds) {
++        runOnServer.run(session -> {
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            for (String realmId : realmIds) {
++                eventStore.clearAdmin(session.realms().getRealm(realmId));
++            }
++        });
++    }
++
++    public void clearAdminEvents(String realmId, long olderThan) {
++        runOnServer.run(session -> {
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            eventStore.clearAdmin(session.realms().getRealm(realmId), olderThan);
++        });
++    }
++
++    public void clearExpiredEvents() {
++        runOnServer.run(session -> {
++            EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++            eventStore.clearExpiredEvents();
++            session.invalidate(PeriodicEventInvalidation.JPA_EVENT_STORE);
++        });
++    }
++
++    private static class QueryHelper implements FetchOnServerWrapper<EventRepresentation[]>, Serializable {
++
++        private final String realmId;
++        private final List<EventType> types;
++        private final String client;
++        private final String user;
++        private final String dateFrom;
++        private final String dateTo;
++        private final String ipAddress;
++        private final Integer firstResult;
++        private final Integer maxResults;
++
++        public QueryHelper(String realmId, List<EventType> types, String client,
++                           String user, String dateFrom, String dateTo,
++                           String ipAddress, Integer firstResult,
++                           Integer maxResults) {
++            this.realmId = realmId;
++            this.types = types;
++            this.client = client;
++            this.user = user;
++            this.dateFrom = dateFrom;
++            this.dateTo = dateTo;
++            this.ipAddress = ipAddress;
++            this.firstResult = firstResult;
++            this.maxResults = maxResults;
++        }
++
++        @Override
++        public FetchOnServer getRunOnServer() {
++            return session -> {
++                EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++
++                EventQuery query = eventStore.createQuery();
++
++                if (realmId != null) {
++                    query.realm(realmId);
++                }
++
++                if (client != null) {
++                    query.client(client);
++                }
++
++                if (types != null && !types.isEmpty()) {
++                    query.type(types.toArray(new EventType[0]));
++                }
++
++                if (user != null) {
++                    query.user(user);
++                }
++
++                if (dateFrom != null) {
++                    Date from = formatDate(dateFrom, "Date(From)");
++                    query.fromDate(from);
++                }
++
++                if (dateTo != null) {
++                    Date to = formatDate(dateTo, "Date(To)");
++                    query.toDate(to);
++                }
++
++                if (ipAddress != null) {
++                    query.ipAddress(ipAddress);
++                }
++                if (firstResult != null) {
++                    query.firstResult(firstResult);
++                }
++                if (maxResults != null) {
++                    query.maxResults(maxResults);
++                }
++
++                return query.getResultStream().map(ModelToRepresentation::toRepresentation).toList();
++            };
++        }
++
++        @Override
++        public Class<EventRepresentation[]> getResultClass() {
++            return EventRepresentation[].class;
++        }
++
++        private Date formatDate(String date, String paramName) {
++            SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
++            try {
++                return df.parse(date);
++            } catch (ParseException e) {
++                throw new BadRequestException("Invalid value for '" + paramName + "', expected format is yyyy-MM-dd");
++            }
++        }
++    }
++
++    private static class AdminQueryHelper implements FetchOnServerWrapper<AdminEventRepresentation[]>, Serializable {
++
++        private String realmId;
++        private List<OperationType> operationTypes;
++        private String authRealm;
++        private String authClient;
++        private String authUser;
++        private String authIpAddress;
++        private String resourcePath;
++        private String dateFrom;
++        private String dateTo;
++        private Integer firstResult;
++        private Integer maxResults;
++
++        public AdminQueryHelper(String realmId, List<OperationType> operationTypes, String authRealm, String authClient,
++                                String authUser, String authIpAddress,
++                                String resourcePath, String dateFrom,
++                                String dateTo, Integer firstResult,
++                                Integer maxResults) {
++
++            this.realmId = realmId;
++            this.operationTypes = operationTypes;
++            this.authRealm = authRealm;
++            this.authClient = authClient;
++            this.authUser = authUser;
++            this.authIpAddress = authIpAddress;
++            this.resourcePath = resourcePath;
++            this.dateFrom = dateFrom;
++            this.dateTo = dateTo;
++            this.firstResult = firstResult;
++            this.maxResults = maxResults;
++        }
++
++        @Override
++        public FetchOnServer getRunOnServer() {
++            return session -> {
++                EventStoreProvider eventStore = session.getProvider(EventStoreProvider.class);
++                AdminEventQuery query = eventStore.createAdminQuery();
++
++                if (realmId != null) {
++                    query.realm(realmId);
++                }
++
++                if (authRealm != null) {
++                    query.authRealm(authRealm);
++                }
++
++                if (authClient != null) {
++                    query.authClient(authClient);
++                }
++
++                if (authUser != null) {
++                    query.authUser(authUser);
++                }
++
++                if (authIpAddress != null) {
++                    query.authIpAddress(authIpAddress);
++                }
++
++                if (resourcePath != null) {
++                    query.resourcePath(resourcePath);
++                }
++
++                if (operationTypes != null && !operationTypes.isEmpty()) {
++                    query.operation(operationTypes.toArray(new OperationType[0]));
++                }
++
++                if (dateFrom != null) {
++                    Date from = formatDate(dateFrom, "Date(From)");
++                    query.fromTime(from);
++                }
++
++                if (dateTo != null) {
++                    Date to = formatDate(dateTo, "Date(To)");
++                    query.toTime(to);
++                }
++
++                if (firstResult != null || maxResults != null) {
++                    if (firstResult == null) {
++                        firstResult = 0;
++                    }
++                    if (maxResults == null) {
++                        maxResults = 100;
++                    }
++                    query.firstResult(firstResult);
++                    query.maxResults(maxResults);
++                }
++
++                return query.getResultStream().map(ModelToRepresentation::toRepresentation).toList();
++            };
++        }
++
++        @Override
++        public Class<AdminEventRepresentation[]> getResultClass() {
++            return AdminEventRepresentation[].class;
++        }
++
++        private Date formatDate(String date, String paramName) {
++            SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
++            try {
++                return df.parse(date);
++            } catch (ParseException e) {
++                throw new BadRequestException("Invalid value for '" + paramName + "', expected format is yyyy-MM-dd");
++            }
++        }
++    }
++
++
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java b/tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java
+new file mode 100755
+index 000000000000..e535c6561f03
+--- /dev/null
++++ b/tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java
+@@ -0,0 +1,350 @@
++/*
++ * Copyright 2016 Red Hat, Inc. and/or its affiliates
++ * and other contributors as indicated by the @author tags.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.keycloak.tests.events;
++
++import java.text.ParseException;
++import java.text.SimpleDateFormat;
++import java.util.Arrays;
++import java.util.Calendar;
++import java.util.Date;
++import java.util.GregorianCalendar;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Random;
++
++import org.keycloak.events.Errors;
++import org.keycloak.events.EventBuilder;
++import org.keycloak.events.EventType;
++import org.keycloak.models.RealmModel;
++import org.keycloak.representations.idm.EventRepresentation;
++import org.keycloak.testframework.annotations.InjectRealm;
++import org.keycloak.testframework.annotations.KeycloakIntegrationTest;
++import org.keycloak.testframework.realm.ManagedRealm;
++import org.keycloak.testframework.realm.RealmConfig;
++import org.keycloak.testframework.realm.RealmConfigBuilder;
++import org.keycloak.testframework.remote.runonserver.InjectRunOnServer;
++import org.keycloak.testframework.remote.runonserver.RunOnServerClient;
++import org.keycloak.testframework.remote.timeoffset.InjectTimeOffSet;
++import org.keycloak.testframework.remote.timeoffset.TimeOffSet;
++import org.keycloak.tests.common.CustomProvidersServerConfig;
++import org.keycloak.tests.providers.events.TestEventsListenerContextDetailsProviderFactory;
++import org.keycloak.tests.suites.DatabaseTest;
++
++import org.apache.commons.lang3.StringUtils;
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Assertions;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++@KeycloakIntegrationTest(config = CustomProvidersServerConfig.class)
++public class EventStoreProviderTest {
++
++    @InjectRealm(config = EventStoreRealm.class)
++    ManagedRealm realm1;
++
++    @InjectRealm(ref = "realm2", config = EventStoreRealm.class)
++    ManagedRealm realm2;
++
++    @InjectRunOnServer
++    RunOnServerClient runOnServer;
++
++    @InjectTimeOffSet
++    TimeOffSet timeOffSet;
++
++    EventRunOnServerHelper eventHelper;
++
++    @BeforeEach
++    public void setup() {
++        eventHelper = new EventRunOnServerHelper(runOnServer);
++    }
++
++    @AfterEach
++    public void after() {
++        eventHelper.clearEvents(realm1.getId(), realm2.getId());
++    }
++
++    @Test
++    @DatabaseTest
++    public void save() {
++        eventHelper.storeEvent(create(EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++    }
++
++    @Test
++    @DatabaseTest
++     // This looks like some database issue, test should get events which are newer or equal to requested time, however it gets only newer events from remote server
++    public void query() {
++        long oldest = System.currentTimeMillis() - 30000;
++        long newest = System.currentTimeMillis() + 30000;
++
++        eventHelper.storeEvent(create(EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(newest, EventType.REGISTER, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(newest, EventType.REGISTER, realm1.getId(), "clientId", "userId2", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(EventType.LOGIN, realm2.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(oldest, EventType.LOGIN, realm1.getId(), "clientId2", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(EventType.LOGIN, realm1.getId(), "clientId", "userId2", "127.0.0.1", "error"));
++
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), null, "clientId", null, null, null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(3, eventHelper.queryEvents(realm1.getId(), List.of(EventType.LOGIN), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), List.of(EventType.LOGIN), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(5, eventHelper.queryEvents(realm1.getId(), List.of(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), List.of(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(3, eventHelper.queryEvents(realm1.getId(), null, null, "userId", null, null, null, null, null).length);
++
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm1.getId(), List.of(EventType.REGISTER), null, "userId", null, null, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, 2).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, 4, null).length);
++
++        Assertions.assertEquals(newest, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, 1)[0].getTime());
++        Assertions.assertEquals(oldest, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, 4, 1)[0].getTime());
++
++        eventHelper.clearEvents(realm1.getId(), realm2.getId());
++
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++
++        String d04 = "2015-03-04";
++        String d05 = "2015-03-05";
++        String d06 = "2015-03-06";
++        String d07 = "2015-03-07";
++
++        String d01 = "2015-03-01";
++        String d03 = "2015-03-03";
++        String d08 = "2015-03-08";
++        String d10 = "2015-03-10";
++
++        Calendar date04 = this.createFromDate(d04);
++        Calendar date05 = this.createFromDate(d05);
++        Calendar date06 = this.createFromDate(d06);
++        Calendar date07 = this.createFromDate(d07);
++
++        eventHelper.storeEvent(create(date04, EventType.LOGIN, realm1.getId(), "clientId", "userId", "error"));
++        eventHelper.storeEvent(create(date04, EventType.LOGIN, realm1.getId(), "clientId", "userId", "error"));
++        eventHelper.storeEvent(create(date05, EventType.REGISTER, realm1.getId(), "clientId", "userId", "error"));
++        eventHelper.storeEvent(create(date05, EventType.REGISTER, realm1.getId(), "clientId", "userId", "error"));
++        eventHelper.storeEvent(create(date06, EventType.CODE_TO_TOKEN, realm1.getId(), "clientId", "userId2", "error"));
++        eventHelper.storeEvent(create(date06, EventType.LOGOUT, realm1.getId(), "clientId", "userId2", "error"));
++        eventHelper.storeEvent(create(date07, EventType.UPDATE_PROFILE, realm2.getId(), "clientId2", "userId2", "error"));
++        eventHelper.storeEvent(create(date07, EventType.UPDATE_EMAIL, realm2.getId(), "clientId2", "userId2", "error"));
++
++        Assertions.assertEquals(6, eventHelper.queryEvents(realm1.getId(), null, "clientId", null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, "clientId2", null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(6, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), null, null, "userId", null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, "userId2", null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, "userId2", null, null, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), List.of(EventType.LOGIN), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), List.of(EventType.REGISTER), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), List.of(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm1.getId(), List.of(EventType.CODE_TO_TOKEN), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm1.getId(), List.of(EventType.LOGOUT), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), List.of(EventType.UPDATE_PROFILE), null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), List.of(EventType.UPDATE_EMAIL), null, null, null, null, null, null, null).length);
++
++        Assertions.assertEquals(6, eventHelper.queryEvents(realm1.getId(), null, null, null, d04, null, null, null, null).length);
++        Assertions.assertEquals(6, eventHelper.queryEvents(realm1.getId(), null, null, null, null, d07, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, d06, null, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), null, null, null, null, d05, null, null, null).length);
++
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm2.getId(), null, null, null, d08, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm2.getId(), null, null, null, null, d03, null, null, null).length);
++
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, d04, d04, null, null, null).length);
++        Assertions.assertEquals(6, eventHelper.queryEvents(realm1.getId(), null, null, null, d04, d07, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, null, d04, d07, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), null, null, null, d05, d07, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, null, d05, d07, null, null, null).length);
++        Assertions.assertEquals(4, eventHelper.queryEvents(realm1.getId(), null, null, null, d04, d05, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, d06, d07, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, null, d06, d07, null, null, null).length);
++
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm1.getId(), null, null, null, d01, d03, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm2.getId(), null, null, null, d01, d03, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm1.getId(), null, null, null, d08, d10, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm2.getId(), null, null, null, d08, d10, null, null, null).length);
++    }
++
++    @Test
++    public void testEventBuilder() {
++        realm1.updateWithCleanup(r -> r.eventsListeners("event-queue-context-details"));
++
++        String expectedRealmName = realm1.getName();
++
++        runOnServer.run(session -> {
++            RealmModel realm = session.getContext().getRealm();
++
++            EventBuilder event = new EventBuilder(realm, session)
++                    .event(EventType.LOGIN)
++                    .session("session1")
++                    .user("user1")
++                    .client("client1");
++            event.clone().error(Errors.USER_NOT_FOUND);
++
++            event.clone().success();
++
++            for (TestEventsListenerContextDetailsProviderFactory.Details details : TestEventsListenerContextDetailsProviderFactory.DETAILS) {
++                Assertions.assertEquals(expectedRealmName, details.realmName());
++                Assertions.assertEquals("client1", details.clientId());
++            }
++        });
++
++        // the two events should be retrieved from the store provider
++        EventRepresentation[] events = eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null);
++        Assertions.assertEquals(2, events.length);
++        EventRepresentation event = Arrays.stream(events).filter(e -> EventType.LOGIN.toString().equals(e.getType())).findFirst().orElse(null);
++        Assertions.assertNotNull(event, "No LOGIN event found");
++        Assertions.assertEquals("user1", event.getUserId());
++        Assertions.assertEquals("client1", event.getClientId());
++        Assertions.assertEquals("session1", event.getSessionId());
++        event = Arrays.stream(events).filter(e -> EventType.LOGIN_ERROR.toString().equals(e.getType())).findFirst().orElse(null);
++        Assertions.assertNotNull(event, "No LOGIN_ERROR event found");
++        Assertions.assertEquals("user1", event.getUserId());
++        Assertions.assertEquals("client1", event.getClientId());
++        Assertions.assertEquals("session1", event.getSessionId());
++    }
++
++    @Test
++    public void clear() {
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 20000, EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis(), EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis(), EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm2.getId(), "clientId", "userId", "127.0.0.1", "error"));
++
++        eventHelper.clearEvents(realm1.getId());
++
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), null, null, null, null, null, null, null, null).length);
++    }
++
++    @Test
++    public void lengthExceedLimit(){
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm1.getId(), StringUtils.repeat("clientId", 100), "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, StringUtils.repeat(realm1.getId(), 100), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm1.getId(), "clientId", StringUtils.repeat("userId", 100), "127.0.0.1", "error"));
++
++        EventRepresentation event = create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error");
++        event.setSessionId(StringUtils.repeat("sessionId", 100));
++        eventHelper.storeEvent(event);
++    }
++
++    @Test
++    public void maxLengthWithNull(){
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realm1.getId(), null, null, "127.0.0.1", "error"));
++    }
++
++    @Test
++    public void clearOld() {
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 300000, EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 200000, EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis(), EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis(), EventType.LOGIN, realm1.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis() - 300000, EventType.LOGIN, realm2.getId(), "clientId", "userId", "127.0.0.1", "error"));
++        eventHelper.storeEvent(create(System.currentTimeMillis(), EventType.LOGIN, realm2.getId(), "clientId", "userId", "127.0.0.1", "error"));
++
++        // Set expiration of events for realm1.getId() .
++        realm1.updateWithCleanup(r -> r.eventsExpiration(100));
++
++        // The first 2 events from realm1.getId() will be deleted
++        eventHelper.clearExpiredEvents();
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm2.getId(), null, null, null, null, null, null, null, null).length);
++
++        // Set expiration of events for realm2.getId() as well
++        realm2.updateWithCleanup(r -> r.eventsExpiration(100));
++
++        // The first event from realm2.getId() will be deleted now
++        eventHelper.clearExpiredEvents();
++        Assertions.assertEquals(2, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(1, eventHelper.queryEvents(realm2.getId(), null, null, null, null, null, null, null, null).length);
++
++        // set time offset to the future. The remaining 2 events from realm1.getId() and 1 event from realm2.getId() should be expired now
++        timeOffSet.set(150);
++        eventHelper.clearExpiredEvents();
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm1.getId(), null, null, null, null, null, null, null, null).length);
++        Assertions.assertEquals(0, eventHelper.queryEvents(realm2.getId(), null, null, null, null, null, null, null, null).length);
++    }
++
++    private EventRepresentation create(EventType event, String realmId, String clientId, String userId, String ipAddress, String error) {
++        return create(System.currentTimeMillis(), event, realmId, clientId, userId, ipAddress, error);
++    }
++
++    private EventRepresentation create(Calendar date, EventType event, String realmId, String clientId, String userId, String error) {
++        return create(date.getTimeInMillis(), event, realmId, clientId, userId, "127.0.0.1", error);
++    }
++
++    private EventRepresentation create(long time, EventType event, String realmId, String clientId, String userId, String ipAddress, String error) {
++        EventRepresentation e = new EventRepresentation();
++        e.setTime(time);
++        e.setType(event.toString());
++        e.setRealmId(realmId);
++        e.setClientId(clientId);
++        e.setUserId(userId);
++        e.setIpAddress(ipAddress);
++        e.setError(error);
++
++        Map<String, String> details = new HashMap<String, String>();
++        details.put("key1", "value1");
++        details.put("key2", "value2");
++
++        e.setDetails(details);
++
++        return e;
++    }
++
++    /**
++     * Creates a {@link Calendar} from the specified date string, which must be in the {@code yyyy-MM-dd} format. Once
++     * the date is parsed, this method creates a {@link Calendar} instance and sets a random time within that date.
++     *
++     * @param dateString a string representing a date in the format {@code yyyy-MM-dd}
++     * @return the {@link Calendar} representing the date with a random time set to it, or {@code null} if the specified
++     * date string is not in the expected format.
++     */
++    private Calendar createFromDate(String dateString) {
++        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
++        Random random = new Random();
++        Calendar result = null;
++        try {
++            Date date = formatter.parse(dateString);
++            result = new GregorianCalendar();
++            result.setTime(date);
++            result.set(Calendar.HOUR_OF_DAY, random.nextInt(0, 24));
++            result.set(Calendar.MINUTE, random.nextInt(0, 60));
++            result.set(Calendar.SECOND, random.nextInt(0, 60));
++            result.set(Calendar.MILLISECOND, random.nextInt(0, 1000));
++        } catch (ParseException e) {
++            e.printStackTrace();
++        }
++        return result;
++    }
++
++    private static final class EventStoreRealm implements RealmConfig {
++
++        @Override
++        public RealmConfigBuilder configure(RealmConfigBuilder realm) {
++            return realm.eventsEnabled(true).eventsExpiration(0);
++        }
++    }
++
++}
+diff --git a/tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java b/tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java
+index 5501af40f7e2..cd0302af812d 100644
+--- a/tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java
++++ b/tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java
+@@ -11,6 +11,7 @@
+         "org.keycloak.tests.common",
+         "org.keycloak.tests.cors",
+         "org.keycloak.tests.db",
++        "org.keycloak.tests.events",
+         "org.keycloak.tests.forms",
+         "org.keycloak.tests.i18n",
+         "org.keycloak.tests.infinispan",
+diff --git a/tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java b/tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java
+new file mode 100644
+index 000000000000..33e411b64d4a
+--- /dev/null
++++ b/tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java
+@@ -0,0 +1,52 @@
++package org.keycloak.tests.providers.events;
++
++import java.util.Collections;
++import java.util.LinkedList;
++import java.util.List;
++
++import org.keycloak.Config;
++import org.keycloak.events.Event;
++import org.keycloak.events.EventListenerProvider;
++import org.keycloak.events.EventListenerProviderFactory;
++import org.keycloak.events.admin.AdminEvent;
++import org.keycloak.models.KeycloakSession;
++import org.keycloak.models.KeycloakSessionFactory;
++
++public class TestEventsListenerContextDetailsProviderFactory implements EventListenerProviderFactory, EventListenerProvider {
++
++    public static List<Details> DETAILS = Collections.synchronizedList(new LinkedList<>());
++
++    @Override
++    public void onEvent(Event event) {
++        DETAILS.add(new Details(event.getRealmName(), event.getClientId()));
++    }
++
++    @Override
++    public void onEvent(AdminEvent event, boolean includeRepresentation) {
++    }
++
++    @Override
++    public EventListenerProvider create(KeycloakSession session) {
++        return this;
++    }
++
++    @Override
++    public void init(Config.Scope config) {
++    }
++
++    @Override
++    public void postInit(KeycloakSessionFactory factory) {
++    }
++
++    @Override
++    public void close() {
++    }
++
++    @Override
++    public String getId() {
++        return "event-queue-context-details";
++    }
++
++    public record Details(String realmName, String clientId) {}
++
++}
+diff --git a/tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory b/tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory
+new file mode 100644
+index 000000000000..0133f54e3de6
+--- /dev/null
++++ b/tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory
+@@ -0,0 +1 @@
++org.keycloak.tests.providers.events.TestEventsListenerContextDetailsProviderFactory
+\ No newline at end of file
+diff --git a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java b/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java
+deleted file mode 100644
+index 8d16ba7d89e1..000000000000
+--- a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java
++++ /dev/null
+@@ -1,66 +0,0 @@
+-/*
+- * Copyright 2016 Red Hat Inc. and/or its affiliates and other contributors
+- * as indicated by the @author tags. All rights reserved.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+- * use this file except in compliance with the License. You may obtain a copy of
+- * the License at
+- *
+- * http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+- * License for the specific language governing permissions and limitations under
+- * the License.
+- */
+-
+-package org.keycloak.testsuite.events;
+-
+-import java.util.ArrayList;
+-import java.util.List;
+-
+-import org.keycloak.representations.idm.RealmRepresentation;
+-import org.keycloak.testsuite.AbstractKeycloakTest;
+-import org.keycloak.testsuite.client.resources.TestingResource;
+-import org.keycloak.testsuite.util.RealmBuilder;
+-
+-import org.junit.Before;
+-
+-/**
+- *
+- * @author Stan Silvert ssilvert@redhat.com (C) 2016 Red Hat Inc.
+- */
+-public abstract class AbstractEventsTest extends AbstractKeycloakTest {
+-
+-    public static final String REALM_NAME_1 = "realmName1";
+-    public static final String REALM_NAME_2 = "realmName2";
+-
+-    protected String realmId;
+-    protected String realmId2;
+-
+-    @Override
+-    public void addTestRealms(List<RealmRepresentation> testRealms) {
+-        testRealms.add(RealmBuilder.create().name(REALM_NAME_1).build());
+-        testRealms.add(RealmBuilder.create().name(REALM_NAME_2).build());
+-    }
+-
+-    @Before
+-    public void before() {
+-        realmId = adminClient.realm(REALM_NAME_1).toRepresentation().getId();
+-        realmId2 = adminClient.realm(REALM_NAME_2).toRepresentation().getId();
+-    }
+-
+-    protected TestingResource testing() {
+-        return getTestingClient().testing();
+-    }
+-
+-    protected List<String> toList(Enum... enumTypes) {
+-        List<String> enumList = new ArrayList<>();
+-        for (Enum type : enumTypes) {
+-            enumList.add(type.toString());
+-        }
+-
+-        return enumList;
+-    }
+-}
+diff --git a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java b/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java
+deleted file mode 100644
+index a703f6466746..000000000000
+--- a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java
++++ /dev/null
+@@ -1,314 +0,0 @@
+-/*
+- * Copyright 2016 Red Hat, Inc. and/or its affiliates
+- * and other contributors as indicated by the @author tags.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- * http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.keycloak.testsuite.events;
+-
+-import java.text.ParseException;
+-import java.text.SimpleDateFormat;
+-import java.util.Date;
+-import java.util.List;
+-import java.util.Map;
+-
+-import org.keycloak.events.admin.OperationType;
+-import org.keycloak.models.jpa.entities.RealmAttributes;
+-import org.keycloak.representations.idm.AdminEventRepresentation;
+-import org.keycloak.representations.idm.AuthDetailsRepresentation;
+-import org.keycloak.representations.idm.RealmRepresentation;
+-
+-import org.junit.After;
+-import org.junit.Assert;
+-import org.junit.Test;
+-
+-/**
+- * @author <a href="mailto:giriraj.sharma27@gmail.com">Giriraj Sharma</a>
+- * @author Stan Silvert ssilvert@redhat.com (C) 2016 Red Hat Inc.
+- */
+-public class AdminEventStoreProviderTest extends AbstractEventsTest {
+-
+-    @After
+-    public void after() {
+-        testing().clearAdminEventStore(realmId);
+-        testing().clearAdminEventStore(realmId2);
+-    }
+-
+-    @Test
+-    public void save() {
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-    }
+-
+-    @Test
+-    public void query() {
+-        long oldest = System.currentTimeMillis() - 30000;
+-        long newest = System.currentTimeMillis() + 30000;
+-
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(newest, realmId, OperationType.ACTION, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(newest, realmId, OperationType.ACTION, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(realmId2, OperationType.CREATE, realmId2, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(oldest, realmId, OperationType.CREATE, realmId, "clientId2", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, null, null, "clientId", null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, "clientId", null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(3, testing().getAdminEvents(realmId, toList(OperationType.CREATE), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, toList(OperationType.CREATE), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, toList(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, toList(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(3, testing().getAdminEvents(realmId, null, null, null, "userId", null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, "userId", null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId, toList(OperationType.ACTION), null, null, "userId", null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, toList(OperationType.ACTION), null, null, "userId", null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, 2).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, 4, null).size());
+-
+-        Assert.assertEquals(newest, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, 1).get(0).getTime());
+-        Assert.assertEquals(oldest, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, 4, 1).get(0).getTime());
+-
+-        testing().clearAdminEventStore(realmId);
+-        testing().clearAdminEventStore(realmId2);
+-
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, null, null, null).size());
+-
+-        String d04 = "2015-03-04";
+-        String d05 = "2015-03-05";
+-        String d06 = "2015-03-06";
+-        String d07 = "2015-03-07";
+-
+-        String d01 = "2015-03-01";
+-        String d03 = "2015-03-03";
+-        String d08 = "2015-03-08";
+-        String d10 = "2015-03-10";
+-
+-        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
+-        Date date04 = null, date05 = null, date06 = null, date07 = null;
+-
+-        try {
+-            date04 = formatter.parse(d04);
+-            date05 = formatter.parse(d05);
+-            date06 = formatter.parse(d06);
+-            date07 = formatter.parse(d07);
+-        } catch (ParseException e) {
+-            e.printStackTrace();
+-        }
+-
+-        testing().onAdminEvent(create(date04, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date04, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date05, realmId, OperationType.ACTION, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date05, realmId, OperationType.ACTION, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date06, realmId, OperationType.UPDATE, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date06, realmId, OperationType.DELETE, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date07, realmId2, OperationType.CREATE, realmId2, "clientId2", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(date07, realmId2, OperationType.CREATE, realmId2, "clientId2", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        Assert.assertEquals(6, testing().getAdminEvents(realmId, null, null, "clientId", null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, "clientId", null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, "clientId2", null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, "clientId2", null, null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(6, testing().getAdminEvents(realmId, null, realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, realmId2, null, null, null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, null, null, null, "userId", null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, "userId2", null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, "userId2", null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, toList(OperationType.ACTION), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, toList(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, toList(OperationType.CREATE, OperationType.ACTION), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId, toList(OperationType.UPDATE), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId, toList(OperationType.DELETE), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, toList(OperationType.CREATE), null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, toList(OperationType.CREATE), null, null, null, null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(6, testing().getAdminEvents(realmId, null, null, null, null, null, null, d04, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d04, null, null, null).size());
+-        Assert.assertEquals(6, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, d07, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, d07, null, null).size());
+-
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, d06, null, null, null).size());
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, d05, null, null).size());
+-
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d08, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, d03, null, null).size());
+-
+-        Assert.assertEquals(6, testing().getAdminEvents(realmId, null, null, null, null, null, null, d04, d07, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d04, d07, null, null).size());
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, null, null, null, null, null, null, d05, d07, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d05, d07, null, null).size());
+-        Assert.assertEquals(4, testing().getAdminEvents(realmId, null, null, null, null, null, null, d04, d05, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, d06, d07, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d06, d07, null, null).size());
+-
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, null, null, null, null, d01, d03, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d01, d03, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, null, null, null, null, d08, d10, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, d08, d10, null, null).size());
+-
+-    }
+-
+-    @Test
+-    public void queryResourcePath() {
+-        long oldest = System.currentTimeMillis() - 30000;
+-        long newest = System.currentTimeMillis() + 30000;
+-
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(newest, realmId, OperationType.ACTION, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(newest, realmId, OperationType.ACTION, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(realmId2, OperationType.CREATE, realmId2, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(oldest, realmId, OperationType.CREATE, realmId, "clientId2", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId2", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "/admin/*", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "*/realms/*", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "*/master", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "/admin/realms/*", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "*/realms/master", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "/admin/*/master", null, null, null, null).size());
+-        Assert.assertEquals(5, testing().getAdminEvents(realmId, null, null, null, null, null, "/ad*/*/master", null, null, null, null).size());
+-
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "/admin/*", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "*/realms/*", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "*/master", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "/admin/realms/*", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "*/realms/master", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "/admin/*/master", null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, "/ad*/*/master", null, null, null, null).size());
+-    }
+-
+-    @Test
+-    public void clear() {
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 20000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId2, OperationType.CREATE, realmId2, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        testing().clearAdminEventStore(realmId);
+-
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, null, null, null).size());
+-    }
+-
+-    @Test
+-    public void clearOld() {
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 20000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        testing().clearAdminEventStore(realmId, System.currentTimeMillis() - 10000);
+-
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-    }
+-
+-    @Test
+-    public void expireOld() {
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 20000, realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis() - 30000, realmId2, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-        testing().onAdminEvent(create(System.currentTimeMillis(), realmId2, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "error"), false);
+-
+-        // Set expiration of events for realmId .
+-        RealmRepresentation realm = realmsResouce().realm(REALM_NAME_1).toRepresentation();
+-        Map<String, String> attributes = realm.getAttributes();
+-        attributes.put(RealmAttributes.ADMIN_EVENTS_EXPIRATION,"10");
+-        realm.setAttributes(attributes);
+-        realmsResouce().realm(REALM_NAME_1).update(realm);
+-
+-        // The first 2 events from realmId will be deleted
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, null, null, null).size());
+-
+-        // Set expiration of events for realmId2 as well
+-        RealmRepresentation realm2 = realmsResouce().realm(REALM_NAME_2).toRepresentation();
+-        Map<String, String> attributes2 = realm2.getAttributes();
+-        attributes2.put(RealmAttributes.ADMIN_EVENTS_EXPIRATION,"10");
+-        realm2.setAttributes(attributes2);
+-        realmsResouce().realm(REALM_NAME_2).update(realm2);
+-
+-        // The first event from realmId2 will be deleted now
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(2, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, null, null, null).size());
+-
+-        // set time offset to the future. The remaining 2 events from realmId and 1 event from realmId2 should be expired now
+-        setTimeOffset(150);
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId, null, null, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().getAdminEvents(realmId2, null, null, null, null, null, null, null, null, null, null).size());
+-
+-        // Revert expirations
+-        attributes.put(RealmAttributes.ADMIN_EVENTS_EXPIRATION,"0");
+-        realm.setAttributes(attributes);
+-        realmsResouce().realm(REALM_NAME_1).update(realm);
+-        attributes2.put(RealmAttributes.ADMIN_EVENTS_EXPIRATION,"0");
+-        realm2.setAttributes(attributes2);
+-        realmsResouce().realm(REALM_NAME_2).update(realm2);
+-    }
+-
+-    @Test
+-    public void handleCustomResourceTypeEvents() {
+-        testing().onAdminEvent(create(realmId, OperationType.CREATE, realmId, "clientId", "userId", "127.0.0.1", "/admin/realms/master", "my-custom-resource", "error"), false);
+-
+-        List<AdminEventRepresentation> adminEvents = testing().getAdminEvents(realmId, null, null, "clientId", null, null, null, null, null, null, null);
+-        Assert.assertEquals(1, adminEvents.size());
+-        Assert.assertEquals("my-custom-resource", adminEvents.get(0).getResourceType());
+-    }
+-
+-    private AdminEventRepresentation create(String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
+-        return create(System.currentTimeMillis(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, error);
+-    }
+-
+-    private AdminEventRepresentation create(String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String resourceType, String error) {
+-        return create(System.currentTimeMillis(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, resourceType, error);
+-    }
+-
+-    private AdminEventRepresentation create(Date date, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
+-        return create(date.getTime(), realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, error);
+-    }
+-
+-    private AdminEventRepresentation create(long time, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String error) {
+-        return create(time, realmId, operation, authRealmId, authClientId, authUserId, authIpAddress, resourcePath, null, error);
+-    }
+-
+-    private AdminEventRepresentation create(long time, String realmId, OperationType operation, String authRealmId, String authClientId, String authUserId, String authIpAddress, String resourcePath, String resourceType, String error) {
+-        AdminEventRepresentation e = new AdminEventRepresentation();
+-        e.setTime(time);
+-        e.setRealmId(realmId);
+-        e.setOperationType(operation.toString());
+-        AuthDetailsRepresentation authDetails = new AuthDetailsRepresentation();
+-        authDetails.setRealmId(authRealmId);
+-        authDetails.setClientId(authClientId);
+-        authDetails.setUserId(authUserId);
+-        authDetails.setIpAddress(authIpAddress);
+-        e.setAuthDetails(authDetails);
+-        e.setResourcePath(resourcePath);
+-        e.setResourceType(resourceType);
+-        e.setError(error);
+-
+-        return e;
+-    }
+-
+-}
+diff --git a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java b/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java
+deleted file mode 100755
+index d2305bb9db92..000000000000
+--- a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java
++++ /dev/null
+@@ -1,167 +0,0 @@
+-/*
+- * Copyright 2024 Red Hat, Inc. and/or its affiliates
+- * and other contributors as indicated by the @author tags.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- * http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.keycloak.testsuite.events;
+-
+-import java.util.ArrayList;
+-import java.util.List;
+-
+-import org.keycloak.common.Profile;
+-import org.keycloak.events.Details;
+-import org.keycloak.events.Errors;
+-import org.keycloak.events.EventBuilder;
+-import org.keycloak.events.EventType;
+-import org.keycloak.models.RealmModel;
+-import org.keycloak.representations.idm.RealmRepresentation;
+-import org.keycloak.testsuite.AbstractKeycloakTest;
+-import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
+-import org.keycloak.testsuite.arquillian.containers.AbstractQuarkusDeployableContainer;
+-import org.keycloak.testsuite.util.ContainerAssume;
+-import org.keycloak.testsuite.util.RealmBuilder;
+-
+-import io.micrometer.core.instrument.Metrics;
+-import org.hamcrest.MatcherAssert;
+-import org.hamcrest.Matchers;
+-import org.junit.After;
+-import org.junit.Test;
+-
+-import static org.keycloak.testsuite.auth.page.AuthRealm.TEST;
+-
+-/**
+- * @author aschwart
+- */
+-@EnableFeature(Profile.Feature.USER_EVENT_METRICS)
+-public class EventMetricsProviderTest extends AbstractKeycloakTest {
+-
+-    private final static String CLIENT_ID = "CLIENT_ID";
+-
+-    private void enableUserEventMetrics(String tags, String events) {
+-        try {
+-            suiteContext.getAuthServerInfo().getArquillianContainer().getDeployableContainer().stop();
+-            enableEventMetricsOptions(tags, events);
+-            suiteContext.getAuthServerInfo().getArquillianContainer().getDeployableContainer().start();
+-            reconnectAdminClient();
+-        } catch (Exception e) {
+-            throw new RuntimeException(e);
+-        }
+-    }
+-
+-    private void enableEventMetricsOptions(String tags, String events) {
+-        if (suiteContext.getAuthServerInfo().isQuarkus()) {
+-            AbstractQuarkusDeployableContainer container = (AbstractQuarkusDeployableContainer) suiteContext.getAuthServerInfo().getArquillianContainer().getDeployableContainer();
+-            List<String> args = new ArrayList<>();
+-            args.add("--metrics-enabled=true");
+-            args.add("--event-metrics-user-enabled=true");
+-            if (tags != null) {
+-                args.add("--event-metrics-user-tags=" + tags);
+-            }
+-            if (events != null) {
+-                args.add("--event-metrics-user-events=" + events);
+-            }
+-            container.setAdditionalBuildArgs(args);
+-        }
+-        else {
+-            throw new RuntimeException("This test will only work on Quarkus as it uses Micrometer");
+-        }
+-    }
+-
+-    private static void setConfigProperty(String name, String value) {
+-        if (value != null) {
+-            System.setProperty(name, value);
+-        }
+-        else {
+-            System.clearProperty(name);
+-        }
+-    }
+-
+-    @Override
+-    public void addTestRealms(List<RealmRepresentation> testRealms) {
+-        RealmBuilder realm = RealmBuilder.create().name(TEST);
+-        testRealms.add(realm.build());
+-    }
+-
+-    @Test
+-    public void shouldCountSingleEventWithTagsAndFilter() {
+-        ContainerAssume.assumeAuthServerQuarkus();
+-
+-        enableUserEventMetrics(null, null);
+-
+-        testingClient.server().run(session -> {
+-            RealmModel realm = session.realms().getRealmByName(TEST);
+-            session.getContext().setRealm(realm);
+-            EventBuilder eventBuilder = new EventBuilder(realm, session);
+-            eventBuilder.event(EventType.LOGIN)
+-                            .client(CLIENT_ID);
+-            eventBuilder.success();
+-        });
+-
+-        testingClient.server().run(session -> {
+-            MatcherAssert.assertThat("Searching for metrics match in " + Metrics.globalRegistry.find("keycloak.user").meters(),
+-                    Metrics.globalRegistry.counter("keycloak.user", "event", "login", "error", "", "realm", TEST).count() == 1);
+-        });
+-
+-        // Show all labels, but filter out events like logout@
+-        enableUserEventMetrics("realm,idp,clientId", "login,refresh_token");
+-
+-        testingClient.server().run(session -> {
+-            RealmModel realm = session.realms().getRealmByName(TEST);
+-            session.getContext().setRealm(realm);
+-
+-            // this event is not recorded as a metric as the event is not listed in the configuration
+-            EventBuilder eventBuilder = new EventBuilder(realm, session);
+-            eventBuilder.event(EventType.LOGOUT)
+-                    .client(CLIENT_ID)
+-                    .detail(Details.IDENTITY_PROVIDER, "IDENTITY_PROVIDER");
+-            eventBuilder.success();
+-
+-            // this event is recorded as an error
+-            eventBuilder = new EventBuilder(realm, session);
+-            eventBuilder.event(EventType.LOGIN)
+-                    .client(CLIENT_ID)
+-                    .detail(Details.IDENTITY_PROVIDER, "IDENTITY_PROVIDER");
+-            eventBuilder.error("ERROR");
+-
+-            // this event is recorded with the special logic about not found clients
+-            eventBuilder = new EventBuilder(realm, session);
+-            eventBuilder.event(EventType.REFRESH_TOKEN)
+-                    .client(CLIENT_ID);
+-            eventBuilder.error(Errors.CLIENT_NOT_FOUND);
+-
+-        });
+-
+-        testingClient.server().run(session -> {
+-            MatcherAssert.assertThat("Two metrics recorded",
+-                    Metrics.globalRegistry.find("keycloak.user").meters().size(), Matchers.equalTo(2));
+-            MatcherAssert.assertThat("Searching for login error metric",
+-                    Metrics.globalRegistry.counter("keycloak.user", "event", "login", "error", "ERROR", "realm", TEST, "client.id", CLIENT_ID, "idp", "IDENTITY_PROVIDER").count() == 1);
+-            MatcherAssert.assertThat("Searching for refresh with unknown client",
+-                    Metrics.globalRegistry.counter("keycloak.user", "event", "refresh_token", "error", "client_not_found", "realm", TEST, "client.id", "unknown", "idp", "").count() == 1);
+-        });
+-
+-    }
+-
+-    @After
+-    public void resetHostnameSettings() {
+-        if (suiteContext.getAuthServerInfo().isQuarkus()) {
+-            AbstractQuarkusDeployableContainer container = (AbstractQuarkusDeployableContainer) suiteContext.getAuthServerInfo().getArquillianContainer().getDeployableContainer();
+-            container.resetConfiguration();
+-        } else {
+-            throw new RuntimeException("This test will only work on Quarkus as it uses Micrometer");
+-        }
+-    }
+-
+-}
+diff --git a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java b/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java
+deleted file mode 100755
+index 8c577966cc77..000000000000
+--- a/testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java
++++ /dev/null
+@@ -1,356 +0,0 @@
+-/*
+- * Copyright 2016 Red Hat, Inc. and/or its affiliates
+- * and other contributors as indicated by the @author tags.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- * http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.keycloak.testsuite.events;
+-
+-import java.text.ParseException;
+-import java.text.SimpleDateFormat;
+-import java.util.Calendar;
+-import java.util.Collections;
+-import java.util.Date;
+-import java.util.GregorianCalendar;
+-import java.util.HashMap;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.Random;
+-
+-import org.keycloak.events.Errors;
+-import org.keycloak.events.EventBuilder;
+-import org.keycloak.events.EventType;
+-import org.keycloak.models.RealmModel;
+-import org.keycloak.representations.idm.EventRepresentation;
+-import org.keycloak.representations.idm.RealmRepresentation;
+-import org.keycloak.testsuite.AssertEvents;
+-
+-import org.apache.commons.lang3.StringUtils;
+-import org.hamcrest.Matchers;
+-import org.junit.After;
+-import org.junit.Assert;
+-import org.junit.Rule;
+-import org.junit.Test;
+-
+-/**
+- * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
+- * @author Stan Silvert ssilvert@redhat.com (C) 2016 Red Hat Inc.
+- */
+-public class EventStoreProviderTest extends AbstractEventsTest {
+-
+-    @Rule
+-    public AssertEvents assertEvents = new AssertEvents(this);
+-
+-    @Override
+-    public void addTestRealms(List<RealmRepresentation> testRealms) {
+-        super.addTestRealms(testRealms);
+-        for (String realmId : new String[] {REALM_NAME_1, REALM_NAME_2}) {
+-            RealmRepresentation adminRealmRep = new RealmRepresentation();
+-            adminRealmRep.setId(realmId);
+-            adminRealmRep.setRealm(realmId);
+-            adminRealmRep.setEnabled(true);
+-            adminRealmRep.setEventsEnabled(true);
+-            adminRealmRep.setEventsExpiration(0);
+-            adminRealmRep.setEventsListeners(Collections.singletonList(TestEventsListenerContextDetailsProviderFactory.PROVIDER_ID));
+-            testRealms.add(adminRealmRep);
+-        }
+-    }
+-
+-    @After
+-    public void after() {
+-        testing().clearEventStore(realmId);
+-        testing().clearEventStore(realmId2);
+-    }
+-
+-    @Test
+-    public void save() {
+-        testing().onEvent(create(EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-    }
+-
+-    @Test
+-     // This looks like some database issue, test should get events which are newer or equal to requested time, however it gets only newer events from remote server
+-    public void query() {
+-        long oldest = System.currentTimeMillis() - 30000;
+-        long newest = System.currentTimeMillis() + 30000;
+-
+-        testing().onEvent(create(EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(newest, EventType.REGISTER, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(newest, EventType.REGISTER, realmId, "clientId", "userId2", "127.0.0.1", "error"));
+-        testing().onEvent(create(EventType.LOGIN, realmId2, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(oldest, EventType.LOGIN, realmId, "clientId2", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(EventType.LOGIN, realmId, "clientId", "userId2", "127.0.0.1", "error"));
+-
+-        Assert.assertEquals(4, testing().queryEvents(realmId, null, "clientId", null, null, null, null, null, null).size());
+-        Assert.assertEquals(5, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(3, testing().queryEvents(realmId, toList(EventType.LOGIN), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, toList(EventType.LOGIN), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(5, testing().queryEvents(realmId, toList(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, toList(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(3, testing().queryEvents(realmId, null, null, "userId", null, null, null, null, null).size());
+-
+-        Assert.assertEquals(1, testing().queryEvents(realmId, toList(EventType.REGISTER), null, "userId", null, null, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, null, null, null, null, 2).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId, null, null, null, null, null, null, 4, null).size());
+-
+-        Assert.assertEquals(newest, testing().queryEvents(realmId, null, null, null, null, null, null, null, 1).get(0).getTime());
+-        Assert.assertEquals(oldest, testing().queryEvents(realmId, null, null, null, null, null, null, 4, 1).get(0).getTime());
+-
+-        testing().clearEventStore(realmId);
+-        testing().clearEventStore(realmId2);
+-
+-        Assert.assertEquals(0, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-
+-        String d04 = "2015-03-04";
+-        String d05 = "2015-03-05";
+-        String d06 = "2015-03-06";
+-        String d07 = "2015-03-07";
+-
+-        String d01 = "2015-03-01";
+-        String d03 = "2015-03-03";
+-        String d08 = "2015-03-08";
+-        String d10 = "2015-03-10";
+-
+-        Calendar date04 = this.createFromDate(d04);
+-        Calendar date05 = this.createFromDate(d05);
+-        Calendar date06 = this.createFromDate(d06);
+-        Calendar date07 = this.createFromDate(d07);
+-
+-        testing().onEvent(create(date04, EventType.LOGIN, realmId, "clientId", "userId", "error"));
+-        testing().onEvent(create(date04, EventType.LOGIN, realmId, "clientId", "userId", "error"));
+-        testing().onEvent(create(date05, EventType.REGISTER, realmId, "clientId", "userId", "error"));
+-        testing().onEvent(create(date05, EventType.REGISTER, realmId, "clientId", "userId", "error"));
+-        testing().onEvent(create(date06, EventType.CODE_TO_TOKEN, realmId, "clientId", "userId2", "error"));
+-        testing().onEvent(create(date06, EventType.LOGOUT, realmId, "clientId", "userId2", "error"));
+-        testing().onEvent(create(date07, EventType.UPDATE_PROFILE, realmId2, "clientId2", "userId2", "error"));
+-        testing().onEvent(create(date07, EventType.UPDATE_EMAIL, realmId2, "clientId2", "userId2", "error"));
+-
+-        Assert.assertEquals(6, testing().queryEvents(realmId, null, "clientId", null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, "clientId2", null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(6, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(4, testing().queryEvents(realmId, null, null, "userId", null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, "userId2", null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, "userId2", null, null, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().queryEvents(realmId, toList(EventType.LOGIN), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId, toList(EventType.REGISTER), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(4, testing().queryEvents(realmId, toList(EventType.LOGIN, EventType.REGISTER), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId, toList(EventType.CODE_TO_TOKEN), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId, toList(EventType.LOGOUT), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, toList(EventType.UPDATE_PROFILE), null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, toList(EventType.UPDATE_EMAIL), null, null, null, null, null, null, null).size());
+-
+-        Assert.assertEquals(6, testing().queryEvents(realmId, null, null, null, d04, null, null, null, null).size());
+-        Assert.assertEquals(6, testing().queryEvents(realmId, null, null, null, null, d07, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, d06, null, null, null, null).size());
+-        Assert.assertEquals(4, testing().queryEvents(realmId, null, null, null, null, d05, null, null, null).size());
+-
+-        Assert.assertEquals(0, testing().queryEvents(realmId2, null, null, null, d08, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().queryEvents(realmId2, null, null, null, null, d03, null, null, null).size());
+-
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, d04, d04, null, null, null).size());
+-        Assert.assertEquals(6, testing().queryEvents(realmId, null, null, null, d04, d07, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, null, d04, d07, null, null, null).size());
+-        Assert.assertEquals(4, testing().queryEvents(realmId, null, null, null, d05, d07, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, null, d05, d07, null, null, null).size());
+-        Assert.assertEquals(4, testing().queryEvents(realmId, null, null, null, d04, d05, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, d06, d07, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, null, d06, d07, null, null, null).size());
+-
+-        Assert.assertEquals(0, testing().queryEvents(realmId, null, null, null, d01, d03, null, null, null).size());
+-        Assert.assertEquals(0, testing().queryEvents(realmId2, null, null, null, d01, d03, null, null, null).size());
+-        Assert.assertEquals(0, testing().queryEvents(realmId, null, null, null, d08, d10, null, null, null).size());
+-        Assert.assertEquals(0, testing().queryEvents(realmId2, null, null, null, d08, d10, null, null, null).size());
+-    }
+-
+-    @Test
+-    public void testEventBuilder() {
+-        testingClient.server(REALM_NAME_1).run(session -> {
+-            RealmModel realm = session.getContext().getRealm();
+-
+-            EventBuilder event = new EventBuilder(realm, session)
+-                    .event(EventType.LOGIN)
+-                    .session("session1")
+-                    .user("user1")
+-                    .client("client1");
+-            event.clone().error(Errors.USER_NOT_FOUND);
+-
+-            event.clone().success();
+-        });
+-
+-        // expect events to contain the realm name as detail (session context correctly set)
+-        assertEvents.expect(EventType.LOGIN_ERROR)
+-                .ipAddress(Matchers.blankOrNullString())
+-                .realm(realmId)
+-                .client("client1")
+-                .user("user1")
+-                .session("session1")
+-                .error(Errors.USER_NOT_FOUND)
+-                .detail(TestEventsListenerContextDetailsProviderFactory.CONTEXT_REALM_DETAIL, REALM_NAME_1)
+-                .assertEvent();
+-        assertEvents.expect(EventType.LOGIN)
+-                .ipAddress(Matchers.blankOrNullString())
+-                .realm(realmId)
+-                .client("client1")
+-                .user("user1")
+-                .session("session1")
+-                .detail(TestEventsListenerContextDetailsProviderFactory.CONTEXT_REALM_DETAIL, REALM_NAME_1)
+-                .assertEvent();
+-
+-        // the two events should be retrieved from the store provider
+-        List<EventRepresentation> events = testing().queryEvents(realmId, null, null, null, null, null, null, null, null);
+-        Assert.assertEquals(2, events.size());
+-        EventRepresentation event = events.stream().filter(e -> EventType.LOGIN.toString().equals(e.getType())).findFirst().orElse(null);
+-        Assert.assertNotNull("No LOGIN event found", event);
+-        Assert.assertEquals("user1", event.getUserId());
+-        Assert.assertEquals("client1", event.getClientId());
+-        Assert.assertEquals("session1", event.getSessionId());
+-        event = events.stream().filter(e -> EventType.LOGIN_ERROR.toString().equals(e.getType())).findFirst().orElse(null);
+-        Assert.assertNotNull("No LOGIN_ERROR event found", event);
+-        Assert.assertEquals("user1", event.getUserId());
+-        Assert.assertEquals("client1", event.getClientId());
+-        Assert.assertEquals("session1", event.getSessionId());
+-    }
+-
+-    @Test
+-    public void clear() {
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 20000, EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis(), EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis(), EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId2, "clientId", "userId", "127.0.0.1", "error"));
+-
+-        testing().clearEventStore(realmId);
+-
+-        Assert.assertEquals(0, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, null, null, null, null, null, null, null, null).size());
+-    }
+-
+-    @Test
+-    public void lengthExceedLimit(){
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId, StringUtils.repeat("clientId", 100), "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, StringUtils.repeat(realmId, 100), "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId, "clientId", StringUtils.repeat("userId", 100), "127.0.0.1", "error"));
+-
+-        EventRepresentation event = create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error");
+-        event.setSessionId(StringUtils.repeat("sessionId", 100));
+-        testing().onEvent(event);
+-    }
+-
+-    @Test
+-    public void maxLengthWithNull(){
+-        testing().onEvent(create(System.currentTimeMillis() - 30000, EventType.LOGIN, realmId, null, null, "127.0.0.1", "error"));
+-    }
+-
+-    @Test
+-    public void clearOld() {
+-        testing().onEvent(create(System.currentTimeMillis() - 300000, EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 200000, EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis(), EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis(), EventType.LOGIN, realmId, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis() - 300000, EventType.LOGIN, realmId2, "clientId", "userId", "127.0.0.1", "error"));
+-        testing().onEvent(create(System.currentTimeMillis(), EventType.LOGIN, realmId2, "clientId", "userId", "127.0.0.1", "error"));
+-
+-        // Set expiration of events for realmId .
+-        RealmRepresentation realm = realmsResouce().realm(REALM_NAME_1).toRepresentation();
+-        realm.setEventsExpiration(100);
+-        realmsResouce().realm(REALM_NAME_1).update(realm);
+-
+-        // The first 2 events from realmId will be deleted
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(2, testing().queryEvents(realmId2, null, null, null, null, null, null, null, null).size());
+-
+-        // Set expiration of events for realmId2 as well
+-        RealmRepresentation realm2 = realmsResouce().realm(REALM_NAME_2).toRepresentation();
+-        realm2.setEventsExpiration(100);
+-        realmsResouce().realm(REALM_NAME_2).update(realm2);
+-
+-        // The first event from realmId2 will be deleted now
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(2, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(1, testing().queryEvents(realmId2, null, null, null, null, null, null, null, null).size());
+-
+-        // set time offset to the future. The remaining 2 events from realmId and 1 event from realmId2 should be expired now
+-        setTimeOffset(150);
+-        testing().clearExpiredEvents();
+-        Assert.assertEquals(0, testing().queryEvents(realmId, null, null, null, null, null, null, null, null).size());
+-        Assert.assertEquals(0, testing().queryEvents(realmId2, null, null, null, null, null, null, null, null).size());
+-
+-        // Revert expirations
+-        realm.setEventsExpiration(0);
+-        realmsResouce().realm(REALM_NAME_1).update(realm);
+-        realm2.setEventsExpiration(0);
+-        realmsResouce().realm(REALM_NAME_2).update(realm2);
+-    }
+-
+-    private EventRepresentation create(EventType event, String realmId, String clientId, String userId, String ipAddress, String error) {
+-        return create(System.currentTimeMillis(), event, realmId, clientId, userId, ipAddress, error);
+-    }
+-
+-    private EventRepresentation create(Calendar date, EventType event, String realmId, String clientId, String userId, String error) {
+-        return create(date.getTimeInMillis(), event, realmId, clientId, userId, "127.0.0.1", error);
+-    }
+-
+-    private EventRepresentation create(long time, EventType event, String realmId, String clientId, String userId, String ipAddress, String error) {
+-        EventRepresentation e = new EventRepresentation();
+-        e.setTime(time);
+-        e.setType(event.toString());
+-        e.setRealmId(realmId);
+-        e.setClientId(clientId);
+-        e.setUserId(userId);
+-        e.setIpAddress(ipAddress);
+-        e.setError(error);
+-
+-        Map<String, String> details = new HashMap<String, String>();
+-        details.put("key1", "value1");
+-        details.put("key2", "value2");
+-
+-        e.setDetails(details);
+-
+-        return e;
+-    }
+-
+-    /**
+-     * Creates a {@link Calendar} from the specified date string, which must be in the {@code yyyy-MM-dd} format. Once
+-     * the date is parsed, this method creates a {@link Calendar} instance and sets a random time within that date.
+-     *
+-     * @param dateString a string representing a date in the format {@code yyyy-MM-dd}
+-     * @return the {@link Calendar} representing the date with a random time set to it, or {@code null} if the specified
+-     * date string is not in the expected format.
+-     */
+-    private Calendar createFromDate(String dateString) {
+-        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
+-        Random random = new Random();
+-        Calendar result = null;
+-        try {
+-            Date date = formatter.parse(dateString);
+-            result = new GregorianCalendar();
+-            result.setTime(date);
+-            result.set(Calendar.HOUR_OF_DAY, random.nextInt(0, 24));
+-            result.set(Calendar.MINUTE, random.nextInt(0, 60));
+-            result.set(Calendar.SECOND, random.nextInt(0, 60));
+-            result.set(Calendar.MILLISECOND, random.nextInt(0, 1000));
+-        } catch (ParseException e) {
+-            e.printStackTrace();
+-        }
+-        return result;
+-    }
+-
+-
+-}
+diff --git a/testsuite/integration-arquillian/tests/base/testsuites/base-suite b/testsuite/integration-arquillian/tests/base/testsuites/base-suite
+index 468d440e1c0c..9142d47336ab 100644
+--- a/testsuite/integration-arquillian/tests/base/testsuites/base-suite
++++ b/testsuite/integration-arquillian/tests/base/testsuites/base-suite
+@@ -11,7 +11,6 @@ cookies,4
+ docker,4
+ domainextension,4
+ error,4
+-events,4
+ exportimport,4
+ federation,5
+ forms,5
+diff --git a/testsuite/integration-arquillian/tests/base/testsuites/database-suite b/testsuite/integration-arquillian/tests/base/testsuites/database-suite
+index 5db4afcdc700..0a5bc0d25477 100644
+--- a/testsuite/integration-arquillian/tests/base/testsuites/database-suite
++++ b/testsuite/integration-arquillian/tests/base/testsuites/database-suite
+@@ -2,7 +2,6 @@ AccountRestServiceTest
+ AuthorizationCodeTest
+ AuthorizationTest
+ ClientRegistrationTest
+-EventStoreProviderTest
+ ExportImportTest
+ KcOidcBrokerTest
+ LDAPUserLoginTest

@@ -1,0 +1,195 @@
+From 926bc0dfe6b579042ac7130fe8d8da8175bae7c9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bartek=20Iwa=C5=84czuk?= <biwanczuk@gmail.com>
+Date: Wed, 25 Mar 2026 12:05:33 +0100
+Subject: [PATCH] fix(resolver): fall through to .deno/ when BYONM node_modules
+ version mismatches
+
+When resolving `npm:pkg@version` in BYONM mode, the resolver finds a
+matching package.json dep via `intersects` but then resolves the
+directory by package name only, returning whatever version is physically
+installed. If the installed version doesn't satisfy the requested version
+requirement, it should fall through to search `node_modules/.deno/`
+where the exact version may exist.
+
+Fixes #32972
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ libs/resolver/npm/byonm.rs                    | 50 +++++++++++++------
+ .../__test__.jsonc                            | 13 +++++
+ .../byonm_version_mismatch_fallback/deno.json |  3 ++
+ .../byonm_version_mismatch_fallback/main.ts   |  2 +
+ .../node_modules/@denotest/add/index.js       |  1 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ .../node_modules/@denotest/add/index.js       |  1 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ .../node_modules/@denotest/add/index.js       |  1 +
+ .../node_modules/@denotest/add/package.json   |  1 +
+ .../package.json                              |  5 ++
+ 11 files changed, 63 insertions(+), 16 deletions(-)
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/deno.json
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/main.ts
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json
+ create mode 100644 tests/specs/npm/byonm_version_mismatch_fallback/package.json
+
+diff --git a/libs/resolver/npm/byonm.rs b/libs/resolver/npm/byonm.rs
+index c55890cfd190a7..f71b9af52ed8ca 100644
+--- a/libs/resolver/npm/byonm.rs
++++ b/libs/resolver/npm/byonm.rs
+@@ -160,27 +160,45 @@ impl<TSys: ByonmNpmResolverSys> ByonmNpmResolver<TSys> {
+     // now attempt to resolve if it's found in any package.json
+     let maybe_pkg_json_and_alias =
+       self.resolve_pkg_json_and_alias_for_req(req, referrer)?;
+-    match maybe_pkg_json_and_alias {
+-      Some((pkg_json, alias)) => {
+-        // now try node resolution
+-        if let Some(resolved) =
+-          node_resolve_dir(&self.sys, &alias, pkg_json.dir_path())?
+-        {
++    if let Some((pkg_json, alias)) = &maybe_pkg_json_and_alias {
++      // now try node resolution
++      if let Some(resolved) =
++        node_resolve_dir(&self.sys, alias, pkg_json.dir_path())?
++      {
++        // Verify the resolved package version actually satisfies the
++        // requirement. The package.json dep may intersect the req (e.g.,
++        // dep is ^1.3.5, req is @1.3.6) but the physically installed
++        // version might not satisfy it (e.g., 1.3.5 is installed).
++        // In that case, fall through to the .deno/ search.
++        let version_matches = self
++          .pkg_json_resolver
++          .load_package_json(&resolved.join("package.json"))
++          .ok()
++          .flatten()
++          .and_then(|pkg| {
++            let version =
++              Version::parse_from_npm(pkg.version.as_ref()?).ok()?;
++            Some(req.version_req.matches(&version))
++          })
++          .unwrap_or(true);
++        if version_matches {
+           return Ok(resolved);
+         }
+-
+-        Err(ByonmResolvePkgFolderFromDenoReqError::MissingAlias(alias))
+       }
+-      None => {
+-        // now check if node_modules/.deno/ matches this constraint
+-        if let Some(folder) = self.resolve_folder_in_root_node_modules(req) {
+-          return Ok(folder);
+-        }
++    }
++
++    // check if node_modules/.deno/ matches this constraint
++    if let Some(folder) = self.resolve_folder_in_root_node_modules(req) {
++      return Ok(folder);
++    }
+ 
+-        Err(ByonmResolvePkgFolderFromDenoReqError::UnmatchedReq(
+-          req.clone(),
+-        ))
++    match maybe_pkg_json_and_alias {
++      Some((_, alias)) => {
++        Err(ByonmResolvePkgFolderFromDenoReqError::MissingAlias(alias))
+       }
++      None => Err(ByonmResolvePkgFolderFromDenoReqError::UnmatchedReq(
++        req.clone(),
++      )),
+     }
+   }
+ 
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc b/tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc
+new file mode 100644
+index 00000000000000..b23dd97e4a0b20
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/__test__.jsonc
+@@ -0,0 +1,13 @@
++{
++  "tests": {
++    "resolves_exact_version_from_deno_dir": {
++      // When node_modules/@denotest/add has version 1.0.0 installed,
++      // but the user requests npm:@denotest/add@0.5.0, the resolver
++      // should fall through to node_modules/.deno/ and find 0.5.0
++      // instead of returning the mismatched 1.0.0.
++      // Ref: https://github.com/denoland/deno/issues/32972
++      "args": "run -A main.ts",
++      "output": "0.5.0\n"
++    }
++  }
++}
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/deno.json b/tests/specs/npm/byonm_version_mismatch_fallback/deno.json
+new file mode 100644
+index 00000000000000..fde86a1efb656b
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/deno.json
+@@ -0,0 +1,3 @@
++{
++  "nodeModulesDir": "manual"
++}
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/main.ts b/tests/specs/npm/byonm_version_mismatch_fallback/main.ts
+new file mode 100644
+index 00000000000000..ee2e9ee5cd3a08
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/main.ts
+@@ -0,0 +1,2 @@
++import addPkg from "npm:@denotest/add@0.5.0/package.json" with { type: "json" };
++console.log(addPkg.version);
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..62c45aa26dc616
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/index.js
+@@ -0,0 +1 @@
++module.exports.add = (a, b) => a + b;
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..c0225efdc579c4
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@0.5.0/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "0.5.0" }
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..62c45aa26dc616
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/index.js
+@@ -0,0 +1 @@
++module.exports.add = (a, b) => a + b;
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..204a0738c6271d
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/.deno/@denotest+add@1.0.0/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "1.0.0" }
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js
+new file mode 100644
+index 00000000000000..62c45aa26dc616
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/index.js
+@@ -0,0 +1 @@
++module.exports.add = (a, b) => a + b;
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json
+new file mode 100644
+index 00000000000000..204a0738c6271d
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/node_modules/@denotest/add/package.json
+@@ -0,0 +1 @@
++{ "name": "@denotest/add", "version": "1.0.0" }
+diff --git a/tests/specs/npm/byonm_version_mismatch_fallback/package.json b/tests/specs/npm/byonm_version_mismatch_fallback/package.json
+new file mode 100644
+index 00000000000000..aa2d4fad1dc883
+--- /dev/null
++++ b/tests/specs/npm/byonm_version_mismatch_fallback/package.json
+@@ -0,0 +1,5 @@
++{
++  "dependencies": {
++    "@denotest/add": "^1.0.0"
++  }
++}

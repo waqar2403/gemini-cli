@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "instance_id": "home-assistant__core-166464",
+  "repo": {
+    "full_name": "home-assistant/core",
+    "url": "https://github.com/home-assistant/core",
+    "base_commit": "ee7dd329f04c3fedc49a03e1821796a30c38aadb",
+    "primary_language": "Python",
+    "languages": [
+      "Python"
+    ]
+  },
+  "problem": {
+    "statement": "### Description\n\nCondition implementation (See parent task for specification)\n\n\n\n### Additional context\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/home-assistant/core/issues/158637",
+    "source_id": 158637
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "homeassistant/components/humidifier/condition.py",
+      "homeassistant/components/humidifier/conditions.yaml",
+      "homeassistant/components/humidifier/icons.json",
+      "homeassistant/components/humidifier/strings.json",
+      "tests/components/humidifier/test_condition.py"
+    ],
+    "affected_directories": [
+      "homeassistant/components/humidifier",
+      "tests/components/humidifier"
+    ],
+    "files_changed": 5,
+    "directories_changed": 2,
+    "insertions": 144,
+    "deletions": 7,
+    "test_files_changed": [
+      "tests/components/humidifier/test_condition.py"
+    ],
+    "source_files_changed": [
+      "homeassistant/components/humidifier/condition.py",
+      "homeassistant/components/humidifier/conditions.yaml",
+      "homeassistant/components/humidifier/icons.json",
+      "homeassistant/components/humidifier/strings.json"
+    ]
+  },
+  "provenance": {
+    "pr_number": 166464,
+    "pr_url": "https://github.com/home-assistant/core/pull/166464",
+    "pr_title": "Add humidifier condition",
+    "pr_merged_at": "2026-03-25T12:18:19Z",
+    "issue_number": 158637,
+    "issue_url": "https://github.com/home-assistant/core/issues/158637",
+    "issue_created_at": "2025-12-10T15:46:44Z",
+    "issue_labels": []
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 5,
+    "directories_changed": 2,
+    "cross_package": false,
+    "insertions": 144,
+    "deletions": 7,
+    "dependency_depth": 4,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 17.6
+  },
+  "contamination": {
+    "issue_created_at": "2025-12-10T15:46:44Z",
+    "pr_merged_at": "2026-03-25T12:18:19Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "tests/components/humidifier/test_condition.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "homeassistant/components/humidifier/condition.py",
+      "homeassistant/components/humidifier/conditions.yaml",
+      "homeassistant/components/humidifier/icons.json",
+      "homeassistant/components/humidifier/strings.json",
+      "tests/components/humidifier/test_condition.py"
+    ],
+    "dependency_chain": [
+      "homeassistant/components/humidifier/condition.py",
+      "homeassistant/components/humidifier/conditions.yaml",
+      "homeassistant/components/humidifier/icons.json",
+      "homeassistant/components/humidifier/strings.json"
+    ],
+    "min_context_tokens": 10000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

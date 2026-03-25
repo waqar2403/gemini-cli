@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "instance_id": "keycloak__keycloak-47403",
+  "repo": {
+    "full_name": "keycloak/keycloak",
+    "url": "https://github.com/keycloak/keycloak",
+    "base_commit": "0369951480038b821b3751a1c85551f779ecbf5c",
+    "primary_language": "Java",
+    "languages": [
+      "Java"
+    ]
+  },
+  "problem": {
+    "statement": "### Description\n\nMigrate events package to test framework",
+    "source": "issue",
+    "source_url": "https://github.com/keycloak/keycloak/issues/47401",
+    "source_id": 47401
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java",
+      "tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java",
+      "tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/testsuites/base-suite",
+      "testsuite/integration-arquillian/tests/base/testsuites/database-suite"
+    ],
+    "affected_directories": [
+      "tests/base/src/test/java/org/keycloak/tests/common",
+      "tests/base/src/test/java/org/keycloak/tests/events",
+      "tests/base/src/test/java/org/keycloak/tests/suites",
+      "tests/custom-providers/src/main/java/org/keycloak/tests/providers/events",
+      "tests/custom-providers/src/main/resources/META-INF/services",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events",
+      "testsuite/integration-arquillian/tests/base/testsuites"
+    ],
+    "files_changed": 15,
+    "directories_changed": 7,
+    "insertions": 1263,
+    "deletions": 905,
+    "test_files_changed": [
+      "tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java",
+      "tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java",
+      "tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/testsuites/base-suite",
+      "testsuite/integration-arquillian/tests/base/testsuites/database-suite"
+    ],
+    "source_files_changed": []
+  },
+  "provenance": {
+    "pr_number": 47403,
+    "pr_url": "https://github.com/keycloak/keycloak/pull/47403",
+    "pr_title": "Migrate events package to test framework",
+    "pr_merged_at": "2026-03-25T13:35:55Z",
+    "issue_number": 47401,
+    "issue_url": "https://github.com/keycloak/keycloak/issues/47401",
+    "issue_created_at": "2026-03-24T13:55:42Z",
+    "issue_labels": [
+      "kind/task",
+      "release/26.6.0"
+    ]
+  },
+  "classification": {
+    "task_type": "migration",
+    "difficulty_tier": "expert",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 15,
+    "directories_changed": 7,
+    "cross_package": false,
+    "insertions": 1263,
+    "deletions": 905,
+    "dependency_depth": 0,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 224.3
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-24T13:55:42Z",
+    "pr_merged_at": "2026-03-25T13:35:55Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "java",
+    "runtime_version": "21",
+    "package_manager": "maven",
+    "install_command": "mvn dependency:resolve",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "mvn test",
+    "fail_to_pass": [
+      "tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java",
+      "tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java",
+      "tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/testsuites/base-suite",
+      "testsuite/integration-arquillian/tests/base/testsuites/database-suite"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "tests/base/src/test/java/org/keycloak/tests/common/CustomProvidersServerConfig.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/AdminEventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventMetricsProviderWithTagsTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventRunOnServerHelper.java",
+      "tests/base/src/test/java/org/keycloak/tests/events/EventStoreProviderTest.java",
+      "tests/base/src/test/java/org/keycloak/tests/suites/Base2TestSuite.java",
+      "tests/custom-providers/src/main/java/org/keycloak/tests/providers/events/TestEventsListenerContextDetailsProviderFactory.java",
+      "tests/custom-providers/src/main/resources/META-INF/services/org.keycloak.events.EventListenerProviderFactory",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AbstractEventsTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/AdminEventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventMetricsProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/src/test/java/org/keycloak/testsuite/events/EventStoreProviderTest.java",
+      "testsuite/integration-arquillian/tests/base/testsuites/base-suite",
+      "testsuite/integration-arquillian/tests/base/testsuites/database-suite"
+    ],
+    "dependency_chain": [],
+    "min_context_tokens": 30000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

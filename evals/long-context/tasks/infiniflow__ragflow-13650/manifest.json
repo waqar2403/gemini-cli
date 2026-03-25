@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "instance_id": "infiniflow__ragflow-13650",
+  "repo": {
+    "full_name": "infiniflow/ragflow",
+    "url": "https://github.com/infiniflow/ragflow",
+    "base_commit": "ad6bdb5bfe5e30832664ecdc85a5ca44b7de0c49",
+    "primary_language": "Python",
+    "languages": [
+      "Python"
+    ]
+  },
+  "problem": {
+    "statement": "### Is there an existing issue for the same feature request?\n\n- [x] I have checked the existing issues.\n\n### Is your feature request related to a problem?\n\n```Markdown\nIt's not a problem. But a large part of our local KB is epub files. We can unpack the epub files to folders of htmls. However, it would be better to have a native support of epub files directly.\n```\n\n\n### Describe the feature you'd like\n\nNative support of Epub filetype.\r\n\r\n\n\n### Describe implementation you've considered\n\nThe epub files are simply a bunch of packed htmls with clear structures. It would be easy to bridge the gap between epub and current processes of RAGFlow.\n\n### Documentation, adoption, use case\n\n```Markdown\nRAGFlow would have direct access to current storage of epubs, which is a high quality of information\n```\n\n\n### Additional information\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/infiniflow/ragflow/issues/1398",
+    "source_id": 1398
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "api/utils/file_utils.py",
+      "deepdoc/parser/__init__.py",
+      "deepdoc/parser/epub_parser.py",
+      "rag/app/naive.py",
+      "rag/flow/parser/parser.py",
+      "test/unit_test/api/utils/test_api_file_utils.py",
+      "test/unit_test/deepdoc/parser/test_epub_parser.py"
+    ],
+    "affected_directories": [
+      "api/utils",
+      "deepdoc/parser",
+      "rag/app",
+      "rag/flow/parser",
+      "test/unit_test/api/utils",
+      "test/unit_test/deepdoc/parser"
+    ],
+    "files_changed": 7,
+    "directories_changed": 6,
+    "insertions": 598,
+    "deletions": 43,
+    "test_files_changed": [
+      "test/unit_test/api/utils/test_api_file_utils.py",
+      "test/unit_test/deepdoc/parser/test_epub_parser.py"
+    ],
+    "source_files_changed": [
+      "api/utils/file_utils.py",
+      "deepdoc/parser/__init__.py",
+      "deepdoc/parser/epub_parser.py",
+      "rag/app/naive.py",
+      "rag/flow/parser/parser.py"
+    ]
+  },
+  "provenance": {
+    "pr_number": 13650,
+    "pr_url": "https://github.com/infiniflow/ragflow/pull/13650",
+    "pr_title": "Feat: support epub parsing",
+    "pr_merged_at": "2026-03-17T12:14:06Z",
+    "issue_number": 1398,
+    "issue_url": "https://github.com/infiniflow/ragflow/issues/1398",
+    "issue_created_at": "2024-07-06T02:51:19Z",
+    "issue_labels": [
+      "\ud83d\udc9e feature"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module",
+      "api-boundary"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 7,
+    "directories_changed": 6,
+    "cross_package": false,
+    "insertions": 598,
+    "deletions": 43,
+    "dependency_depth": 5,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 67.6
+  },
+  "contamination": {
+    "issue_created_at": "2024-07-06T02:51:19Z",
+    "pr_merged_at": "2026-03-17T12:14:06Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "test/unit_test/api/utils/test_api_file_utils.py",
+      "test/unit_test/deepdoc/parser/test_epub_parser.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "api/utils/file_utils.py",
+      "deepdoc/parser/__init__.py",
+      "deepdoc/parser/epub_parser.py",
+      "rag/app/naive.py",
+      "rag/flow/parser/parser.py",
+      "test/unit_test/api/utils/test_api_file_utils.py",
+      "test/unit_test/deepdoc/parser/test_epub_parser.py"
+    ],
+    "dependency_chain": [
+      "api/utils/file_utils.py",
+      "deepdoc/parser/__init__.py",
+      "deepdoc/parser/epub_parser.py",
+      "rag/app/naive.py",
+      "rag/flow/parser/parser.py"
+    ],
+    "min_context_tokens": 14000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

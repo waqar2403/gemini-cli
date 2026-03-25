@@ -1,0 +1,420 @@
+From 811be76caba2b1a186941b93aad10b30ec80efff Mon Sep 17 00:00:00 2001
+From: Alex Dima <alexdima@microsoft.com>
+Date: Mon, 23 Mar 2026 22:19:12 +0100
+Subject: [PATCH] Flatten sandbox network settings
+
+Split the nested `chat.tools.terminal.sandbox.network` object setting into three flat settings:
+- `chat.tools.terminal.sandbox.network.allowedDomains`
+- `chat.tools.terminal.sandbox.network.deniedDomains`
+- `chat.tools.terminal.sandbox.network.allowTrustedDomains`
+
+Add configuration migration to automatically migrate existing values.
+The old setting is preserved as deprecated with a pointer to the new ones.
+
+Fixes #304232
+---
+ .../terminal/common/terminalConfiguration.ts  | 19 ++++++
+ .../terminal/terminalContribExports.ts        |  4 ++
+ .../terminal.chatAgentTools.contribution.ts   |  4 +-
+ .../browser/tools/sandboxOutputAnalyzer.ts    |  2 +-
+ .../terminalChatAgentToolsConfiguration.ts    | 64 +++++++++++--------
+ .../chatAgentTools/common/terminalSandbox.ts  | 11 ----
+ .../common/terminalSandboxService.ts          | 24 ++++---
+ .../browser/terminalSandboxService.test.ts    | 64 +++++++------------
+ .../runInTerminalTool.test.ts                 |  4 +-
+ 9 files changed, 103 insertions(+), 93 deletions(-)
+
+diff --git a/src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts b/src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts
+index 2d1dd15ce5217..be681d6ef0618 100644
+--- a/src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts
++++ b/src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts
+@@ -734,3 +734,22 @@ Registry.as<IConfigurationMigrationRegistry>(WorkbenchExtensions.ConfigurationMi
+ 			return configurationKeyValuePairs;
+ 		}
+ 	}]);
++
++Registry.as<IConfigurationMigrationRegistry>(WorkbenchExtensions.ConfigurationMigration)
++	.registerConfigurationMigrations([{
++		key: TerminalContribSettingId.DeprecatedTerminalSandboxNetwork,
++		migrateFn: (value: { allowedDomains?: string[]; deniedDomains?: string[]; allowTrustedDomains?: boolean }, valueAccessor) => {
++			const configurationKeyValuePairs: ConfigurationKeyValuePairs = [];
++			if (value?.allowedDomains !== undefined && valueAccessor(TerminalContribSettingId.TerminalSandboxNetworkAllowedDomains) === undefined) {
++				configurationKeyValuePairs.push([TerminalContribSettingId.TerminalSandboxNetworkAllowedDomains, { value: value.allowedDomains }]);
++			}
++			if (value?.deniedDomains !== undefined && valueAccessor(TerminalContribSettingId.TerminalSandboxNetworkDeniedDomains) === undefined) {
++				configurationKeyValuePairs.push([TerminalContribSettingId.TerminalSandboxNetworkDeniedDomains, { value: value.deniedDomains }]);
++			}
++			if (value?.allowTrustedDomains !== undefined && valueAccessor(TerminalContribSettingId.TerminalSandboxNetworkAllowTrustedDomains) === undefined) {
++				configurationKeyValuePairs.push([TerminalContribSettingId.TerminalSandboxNetworkAllowTrustedDomains, { value: value.allowTrustedDomains }]);
++			}
++			configurationKeyValuePairs.push([TerminalContribSettingId.DeprecatedTerminalSandboxNetwork, { value: undefined }]);
++			return configurationKeyValuePairs;
++		}
++	}]);
+diff --git a/src/vs/workbench/contrib/terminal/terminalContribExports.ts b/src/vs/workbench/contrib/terminal/terminalContribExports.ts
+index a24b204a899d5..babbac632fcc8 100644
+--- a/src/vs/workbench/contrib/terminal/terminalContribExports.ts
++++ b/src/vs/workbench/contrib/terminal/terminalContribExports.ts
+@@ -46,6 +46,10 @@ export const enum TerminalContribSettingId {
+ 	EnableAutoApprove = TerminalChatAgentToolsSettingId.EnableAutoApprove,
+ 	ShellIntegrationTimeout = TerminalChatAgentToolsSettingId.ShellIntegrationTimeout,
+ 	OutputLocation = TerminalChatAgentToolsSettingId.OutputLocation,
++	DeprecatedTerminalSandboxNetwork = TerminalChatAgentToolsSettingId.DeprecatedTerminalSandboxNetwork,
++	TerminalSandboxNetworkAllowedDomains = TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains,
++	TerminalSandboxNetworkDeniedDomains = TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains,
++	TerminalSandboxNetworkAllowTrustedDomains = TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains,
+ }
+ 
+ // HACK: Export some context key strings from `terminalContrib/` that are depended upon elsewhere.
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts
+index 5d1e90193abb4..e8bd274254649 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts
+@@ -142,7 +142,9 @@ export class ChatAgentToolsContribution extends Disposable implements IWorkbench
+ 		this._register(this._configurationService.onDidChangeConfiguration(e => {
+ 			if (
+ 				e.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxEnabled) ||
+-				e.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork)
++				e.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains) ||
++				e.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains) ||
++				e.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains)
+ 			) {
+ 				this._registerRunInTerminalTool();
+ 			}
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts
+index 8b1687f1d3545..684fcf2051e59 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts
+@@ -37,7 +37,7 @@ export class SandboxOutputAnalyzer extends Disposable implements IOutputAnalyzer
+ 			? 'Command failed while running in sandboxed mode. If the command failed due to sandboxing:'
+ 			: 'Command ran in sandboxed mode and may have been blocked by the sandbox. If the command failed due to sandboxing:';
+ 		return `${prefix}
+-- If it would be reasonable to extend the sandbox rules, work with the user to update allowWrite for file system access problems in ${fileSystemSetting}, or to add required domains to ${TerminalChatAgentToolsSettingId.TerminalSandboxNetwork}.allowedDomains.
++- If it would be reasonable to extend the sandbox rules, work with the user to update allowWrite for file system access problems in ${fileSystemSetting}, or to add required domains to ${TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains}.
+ - Otherwise, immediately retry the command with requestUnsandboxedExecution=true. Do NOT ask the user — setting this flag automatically shows a confirmation prompt to the user.
+ 
+ Here is the output of the command:\n`;
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts
+index e55ce632fd19d..221f2e29d2068 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts
+@@ -21,7 +21,9 @@ export const enum TerminalChatAgentToolsSettingId {
+ 	AutoReplyToPrompts = 'chat.tools.terminal.autoReplyToPrompts',
+ 	OutputLocation = 'chat.tools.terminal.outputLocation',
+ 	TerminalSandboxEnabled = 'chat.tools.terminal.sandbox.enabled',
+-	TerminalSandboxNetwork = 'chat.tools.terminal.sandbox.network',
++	TerminalSandboxNetworkAllowedDomains = 'chat.tools.terminal.sandbox.network.allowedDomains',
++	TerminalSandboxNetworkDeniedDomains = 'chat.tools.terminal.sandbox.network.deniedDomains',
++	TerminalSandboxNetworkAllowTrustedDomains = 'chat.tools.terminal.sandbox.network.allowTrustedDomains',
+ 	TerminalSandboxLinuxFileSystem = 'chat.tools.terminal.sandbox.linuxFileSystem',
+ 	TerminalSandboxMacFileSystem = 'chat.tools.terminal.sandbox.macFileSystem',
+ 	PreventShellHistory = 'chat.tools.terminal.preventShellHistory',
+@@ -32,6 +34,7 @@ export const enum TerminalChatAgentToolsSettingId {
+ 	TerminalProfileMacOs = 'chat.tools.terminal.terminalProfile.osx',
+ 	TerminalProfileWindows = 'chat.tools.terminal.terminalProfile.windows',
+ 
++	DeprecatedTerminalSandboxNetwork = 'chat.tools.terminal.sandbox.network',
+ 	DeprecatedAutoApproveCompatible = 'chat.agent.terminal.autoApprove',
+ 	DeprecatedAutoApprove1 = 'chat.agent.terminal.allowList',
+ 	DeprecatedAutoApprove2 = 'chat.agent.terminal.denyList',
+@@ -531,33 +534,26 @@ export const terminalChatAgentToolsConfiguration: IStringDictionary<IConfigurati
+ 			mode: 'auto'
+ 		}
+ 	},
+-	[TerminalChatAgentToolsSettingId.TerminalSandboxNetwork]: {
+-		markdownDescription: localize('terminalSandbox.networkSetting', "Note: this setting is applicable only when {0} is enabled. Controls network access in the terminal sandbox.", `\`#${TerminalChatAgentToolsSettingId.TerminalSandboxEnabled}#\``),
+-		type: 'object',
+-		properties: {
+-			allowedDomains: {
+-				type: 'array',
+-				description: localize('terminalSandbox.networkSetting.allowedDomains', " Supports wildcards like {0} and an empty list means no network access.", '`*.example.com`'),
+-				items: { type: 'string' },
+-				default: []
+-			},
+-			deniedDomains: {
+-				type: 'array',
+-				description: localize('terminalSandbox.networkSetting.deniedDomains', "Array of denied domains (checked first, takes precedence over allowedDomains)."),
+-				items: { type: 'string' },
+-				default: []
+-			},
+-			allowTrustedDomains: {
+-				type: 'boolean',
+-				description: localize('terminalSandbox.networkSetting.allowTrustedDomains', "When enabled, the Trusted Domains list is included in the allowed domains for network access."),
+-				default: false
+-			}
+-		},
+-		default: {
+-			allowedDomains: [],
+-			deniedDomains: [],
+-			allowTrustedDomains: false
+-		},
++	[TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains]: {
++		markdownDescription: localize('terminalSandbox.networkSetting.allowedDomains', "Note: this setting is applicable only when {0} is enabled. Allowed domains for network access in the terminal sandbox. Supports wildcards like {1} and an empty list means no network access.", `\`#${TerminalChatAgentToolsSettingId.TerminalSandboxEnabled}#\``, '`*.example.com`'),
++		type: 'array',
++		items: { type: 'string' },
++		default: [],
++		tags: ['preview'],
++		restricted: true,
++	},
++	[TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains]: {
++		markdownDescription: localize('terminalSandbox.networkSetting.deniedDomains', "Note: this setting is applicable only when {0} is enabled. Array of denied domains for network access in the terminal sandbox (checked first, takes precedence over {1}).", `\`#${TerminalChatAgentToolsSettingId.TerminalSandboxEnabled}#\``, `\`#${TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains}#\``),
++		type: 'array',
++		items: { type: 'string' },
++		default: [],
++		tags: ['preview'],
++		restricted: true,
++	},
++	[TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains]: {
++		markdownDescription: localize('terminalSandbox.networkSetting.allowTrustedDomains', "Note: this setting is applicable only when {0} is enabled. When enabled, the Trusted Domains list is included in the allowed domains for network access in the terminal sandbox.", `\`#${TerminalChatAgentToolsSettingId.TerminalSandboxEnabled}#\``),
++		type: 'boolean',
++		default: false,
+ 		tags: ['preview'],
+ 		restricted: true,
+ 	},
+@@ -658,3 +654,15 @@ for (const id of [
+ 		markdownDeprecationMessage: localize('autoApprove.deprecated', 'Use {0} instead', `\`#${TerminalChatAgentToolsSettingId.AutoApprove}#\``)
+ 	};
+ }
++
++terminalChatAgentToolsConfiguration[TerminalChatAgentToolsSettingId.DeprecatedTerminalSandboxNetwork] = {
++	type: 'object',
++	deprecated: true,
++	markdownDeprecationMessage: localize(
++		'terminalSandboxNetwork.deprecated',
++		'This setting has been split into {0}, {1}, and {2}.',
++		`\`#${TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains}#\``,
++		`\`#${TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains}#\``,
++		`\`#${TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains}#\``,
++	),
++};
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts
+index c5606340ce52c..6534d2f1f3392 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts
+@@ -18,14 +18,3 @@ export interface ITerminalSandboxRuntimeConfig {
+ 		denyWrite?: string[];
+ 	};
+ }
+-
+-export interface ITerminalSandboxNetworkSettings {
+-	allowedDomains?: string[];
+-	deniedDomains?: string[];
+-	allowTrustedDomains?: boolean;
+-}
+-
+-export interface ITerminalSandboxSettings extends ITerminalSandboxRuntimeConfig {
+-	enabled?: boolean;
+-	network?: ITerminalSandboxNetworkSettings;
+-}
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts
+index 19b64d484cff7..71cd4d8fbd571 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts
+@@ -17,7 +17,6 @@ import { IEnvironmentService } from '../../../../../platform/environment/common/
+ import { IFileService } from '../../../../../platform/files/common/files.js';
+ import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
+ import { ILogService } from '../../../../../platform/log/common/log.js';
+-import { ITerminalSandboxNetworkSettings } from './terminalSandbox.js';
+ import { IRemoteAgentService } from '../../../../services/remote/common/remoteAgentService.js';
+ import { TerminalChatAgentToolsSettingId } from './terminalChatAgentToolsConfiguration.js';
+ import { IRemoteAgentEnvironment } from '../../../../../platform/remote/common/remoteAgentEnvironment.js';
+@@ -84,7 +83,9 @@ export class TerminalSandboxService extends Disposable implements ITerminalSandb
+ 			// If terminal sandbox settings changed, update sandbox config.
+ 			if (
+ 				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxEnabled) ||
+-				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork) ||
++				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains) ||
++				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains) ||
++				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains) ||
+ 				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxLinuxFileSystem) ||
+ 				e?.affectsConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxMacFileSystem)
+ 			) {
+@@ -190,7 +191,9 @@ export class TerminalSandboxService extends Disposable implements ITerminalSandb
+ 			await this._initTempDir();
+ 		}
+ 		if (this._tempDir) {
+-			const networkSetting = this._configurationService.getValue<ITerminalSandboxNetworkSettings>(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork) ?? {};
++			const allowedDomainsSetting = this._configurationService.getValue<string[]>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains) ?? [];
++			const deniedDomainsSetting = this._configurationService.getValue<string[]>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains) ?? [];
++			const allowTrustedDomains = this._configurationService.getValue<boolean>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains) ?? false;
+ 			const linuxFileSystemSetting = this._os === OperatingSystem.Linux
+ 				? this._configurationService.getValue<{ denyRead?: string[]; allowWrite?: string[]; denyWrite?: string[] }>(TerminalChatAgentToolsSettingId.TerminalSandboxLinuxFileSystem) ?? {}
+ 				: {};
+@@ -201,15 +204,15 @@ export class TerminalSandboxService extends Disposable implements ITerminalSandb
+ 			const linuxAllowWrite = this._updateAllowWritePathsWithWorkspaceFolders(linuxFileSystemSetting.allowWrite);
+ 			const macAllowWrite = this._updateAllowWritePathsWithWorkspaceFolders(macFileSystemSetting.allowWrite);
+ 
+-			let allowedDomains = networkSetting.allowedDomains ?? [];
+-			if (networkSetting.allowTrustedDomains) {
++			let allowedDomains = allowedDomainsSetting;
++			if (allowTrustedDomains) {
+ 				allowedDomains = this._addTrustedDomainsToAllowedDomains(allowedDomains);
+ 			}
+ 
+ 			const sandboxSettings = {
+ 				network: {
+ 					allowedDomains,
+-					deniedDomains: networkSetting.deniedDomains ?? []
++					deniedDomains: deniedDomainsSetting
+ 				},
+ 				filesystem: {
+ 					denyRead: this._os === OperatingSystem.Macintosh ? macFileSystemSetting.denyRead : linuxFileSystemSetting.denyRead,
+@@ -279,14 +282,15 @@ export class TerminalSandboxService extends Disposable implements ITerminalSandb
+ 	}
+ 
+ 	public getResolvedNetworkDomains(): ITerminalSandboxResolvedNetworkDomains {
+-		const networkSetting = this._configurationService.getValue<ITerminalSandboxNetworkSettings>(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork) ?? {};
+-		let allowedDomains = networkSetting.allowedDomains ?? [];
+-		if (networkSetting.allowTrustedDomains) {
++		let allowedDomains = this._configurationService.getValue<string[]>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains) ?? [];
++		const deniedDomains = this._configurationService.getValue<string[]>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains) ?? [];
++		const allowTrustedDomains = this._configurationService.getValue<boolean>(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains) ?? false;
++		if (allowTrustedDomains) {
+ 			allowedDomains = this._addTrustedDomainsToAllowedDomains(allowedDomains);
+ 		}
+ 		return {
+ 			allowedDomains,
+-			deniedDomains: networkSetting.deniedDomains ?? []
++			deniedDomains
+ 		};
+ 	}
+ 
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts
+index 33d74053c2b3f..a85db3988f2eb 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts
+@@ -167,11 +167,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 		// Setup default configuration
+ 		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxEnabled, true);
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: [],
+-			deniedDomains: [],
+-			allowTrustedDomains: false
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, false);
+ 
+ 		instantiationService.stub(IConfigurationService, configurationService);
+ 		instantiationService.stub(IFileService, fileService);
+@@ -191,11 +189,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should filter out sole wildcard (*) from trusted domains', async () => {
+ 		// Setup: Enable allowTrustedDomains and add * to trusted domains
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: [],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = ['*'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -211,11 +207,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should allow wildcards with domains like *.github.com', async () => {
+ 		// Setup: Enable allowTrustedDomains and add *.github.com
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: [],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = ['*.github.com'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -232,11 +226,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should combine trusted domains with configured allowedDomains, filtering out *', async () => {
+ 		// Setup: Enable allowTrustedDomains with multiple domains including *
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: ['example.com'],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, ['example.com']);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = ['*', '*.github.com', 'microsoft.com'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -256,11 +248,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should not include trusted domains when allowTrustedDomains is false', async () => {
+ 		// Setup: Disable allowTrustedDomains
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: ['example.com'],
+-			deniedDomains: [],
+-			allowTrustedDomains: false
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, ['example.com']);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, false);
+ 		trustedDomainService.trustedDomains = ['*', '*.github.com'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -277,11 +267,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should deduplicate domains when combining sources', async () => {
+ 		// Setup: Same domain in both sources
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: ['github.com', '*.github.com'],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, ['github.com', '*.github.com']);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = ['*.github.com', 'github.com'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -299,11 +287,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should handle empty trusted domains list', async () => {
+ 		// Setup: Empty trusted domains
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: ['example.com'],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, ['example.com']);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = [];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+@@ -320,11 +306,9 @@ suite('TerminalSandboxService - allowTrustedDomains', () => {
+ 
+ 	test('should handle only * in trusted domains', async () => {
+ 		// Setup: Only * in trusted domains (edge case)
+-		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetwork, {
+-			allowedDomains: [],
+-			deniedDomains: [],
+-			allowTrustedDomains: true
+-		});
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkDeniedDomains, []);
++		configurationService.setUserConfiguration(TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowTrustedDomains, true);
+ 		trustedDomainService.trustedDomains = ['*'];
+ 
+ 		const sandboxService = store.add(instantiationService.createInstance(TerminalSandboxService));
+diff --git a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
+index 7b3f39ad07462..a71d13837b95c 100644
+--- a/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
++++ b/src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts
+@@ -1978,8 +1978,8 @@ suite('ChatAgentToolsContribution - tool registration refresh', () => {
+ 
+ 		// Fire network config change
+ 		configurationService.onDidChangeConfigurationEmitter.fire({
+-			affectsConfiguration: (key: string) => key === TerminalChatAgentToolsSettingId.TerminalSandboxNetwork,
+-			affectedKeys: new Set([TerminalChatAgentToolsSettingId.TerminalSandboxNetwork]),
++			affectsConfiguration: (key: string) => key === TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains,
++			affectedKeys: new Set([TerminalChatAgentToolsSettingId.TerminalSandboxNetworkAllowedDomains]),
+ 			source: ConfigurationTarget.USER,
+ 			change: null!,
+ 		});

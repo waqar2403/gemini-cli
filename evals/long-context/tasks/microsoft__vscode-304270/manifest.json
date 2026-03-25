@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "instance_id": "microsoft__vscode-304270",
+  "repo": {
+    "full_name": "microsoft/vscode",
+    "url": "https://github.com/microsoft/vscode",
+    "base_commit": "85ba79cf0226ebf10f7abf28b86a5ed1b27a1c00",
+    "primary_language": "TypeScript",
+    "languages": [
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "```\n  \"chat.tools.terminal.sandbox.network\": {\n    \"allowedDomains\": [\"microsoft.com\", \"google.com\"],\n    \"deniedDomains\": [],\n    \"allowTrustedDomains\": false\n  },\n```\nShould instead be:\n```\n\"chat.tools.terminal.sandbox.network.allowedDomains\": [\"microsoft.com\", \"google.com\"],\n\"chat.tools.terminal.sandbox.network.deniedDomains\": [],\n\"chat.tools.terminal.sandbox.network.allowTrustedDomains\": false\n```\n\n<img width=\"676\" height=\"78\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/52ad4d02-fb0d-492a-969c-0c5a725ddf14\" />",
+    "source": "issue",
+    "source_url": "https://github.com/microsoft/vscode/issues/304232",
+    "source_id": 304232
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts",
+      "src/vs/workbench/contrib/terminal/terminalContribExports.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts"
+    ],
+    "affected_directories": [
+      "src/vs/workbench/contrib/terminal",
+      "src/vs/workbench/contrib/terminal/common",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser"
+    ],
+    "files_changed": 9,
+    "directories_changed": 7,
+    "insertions": 103,
+    "deletions": 93,
+    "test_files_changed": [
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts"
+    ],
+    "source_files_changed": [
+      "src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts",
+      "src/vs/workbench/contrib/terminal/terminalContribExports.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 304270,
+    "pr_url": "https://github.com/microsoft/vscode/pull/304270",
+    "pr_title": "Flatten sandbox network settings",
+    "pr_merged_at": "2026-03-23T22:17:09Z",
+    "issue_number": 304232,
+    "issue_url": "https://github.com/microsoft/vscode/issues/304232",
+    "issue_created_at": "2026-03-23T19:07:44Z",
+    "issue_labels": [
+      "bug",
+      "agent-sandbox"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 9,
+    "directories_changed": 7,
+    "cross_package": false,
+    "insertions": 103,
+    "deletions": 93,
+    "dependency_depth": 7,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 24.1
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-23T19:07:44Z",
+    "pr_merged_at": "2026-03-23T22:17:09Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts",
+      "src/vs/workbench/contrib/terminal/terminalContribExports.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/browser/terminalSandboxService.test.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/test/electron-browser/runInTerminalTool.test.ts"
+    ],
+    "dependency_chain": [
+      "src/vs/workbench/contrib/terminal/common/terminalConfiguration.ts",
+      "src/vs/workbench/contrib/terminal/terminalContribExports.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/terminal.chatAgentTools.contribution.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/browser/tools/sandboxOutputAnalyzer.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalChatAgentToolsConfiguration.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandbox.ts",
+      "src/vs/workbench/contrib/terminalContrib/chatAgentTools/common/terminalSandboxService.ts"
+    ],
+    "min_context_tokens": 18000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

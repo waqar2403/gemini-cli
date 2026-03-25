@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "instance_id": "mermaid-js__mermaid-7457",
+  "repo": {
+    "full_name": "mermaid-js/mermaid",
+    "url": "https://github.com/mermaid-js/mermaid",
+    "base_commit": "d36b37ae85dd29babef8aff6122377bd4a682e08",
+    "primary_language": "TypeScript",
+    "languages": [
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "I'm doing pixel-based unit tests of mermaid diagrams.  The tests indicate that the diagrams can be (drastically) different on each run.  \r\nHow can I stabilize the layout & render of flowchart diagrams so they are identical on each run?",
+    "source": "issue",
+    "source_url": "https://github.com/mermaid-js/mermaid/issues/2833",
+    "source_id": 2833
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      ".changeset/fix-architecture-deterministic-layout.md",
+      ".gitignore",
+      "cypress/integration/rendering/architecture.spec.ts",
+      "demos/dev/architecture-randomize.html",
+      "docs/syntax/architecture.md",
+      "packages/mermaid/src/config.type.ts",
+      "packages/mermaid/src/diagrams/architecture/architecture.spec.ts",
+      "packages/mermaid/src/diagrams/architecture/architectureRenderer.ts",
+      "packages/mermaid/src/docs/syntax/architecture.md",
+      "packages/mermaid/src/schemas/config.schema.yaml"
+    ],
+    "affected_directories": [
+      ".changeset",
+      "cypress/integration/rendering",
+      "demos/dev",
+      "docs/syntax",
+      "packages/mermaid/src",
+      "packages/mermaid/src/diagrams/architecture",
+      "packages/mermaid/src/docs/syntax",
+      "packages/mermaid/src/schemas"
+    ],
+    "files_changed": 10,
+    "directories_changed": 8,
+    "insertions": 363,
+    "deletions": 46,
+    "test_files_changed": [
+      "cypress/integration/rendering/architecture.spec.ts",
+      "packages/mermaid/src/diagrams/architecture/architecture.spec.ts"
+    ],
+    "source_files_changed": [
+      ".changeset/fix-architecture-deterministic-layout.md",
+      ".gitignore",
+      "demos/dev/architecture-randomize.html",
+      "docs/syntax/architecture.md",
+      "packages/mermaid/src/config.type.ts",
+      "packages/mermaid/src/diagrams/architecture/architectureRenderer.ts",
+      "packages/mermaid/src/docs/syntax/architecture.md",
+      "packages/mermaid/src/schemas/config.schema.yaml"
+    ]
+  },
+  "provenance": {
+    "pr_number": 7457,
+    "pr_url": "https://github.com/mermaid-js/mermaid/pull/7457",
+    "pr_title": "Feature/2833 add randomize config option for architecture diagrams",
+    "pr_merged_at": "2026-03-16T14:16:14Z",
+    "issue_number": 2833,
+    "issue_url": "https://github.com/mermaid-js/mermaid/issues/2833",
+    "issue_created_at": "2022-03-17T20:25:04Z",
+    "issue_labels": [
+      "Type: Enhancement",
+      "Contributor needed",
+      "Status: Approved",
+      "Area: Development"
+    ]
+  },
+  "classification": {
+    "task_type": "feature",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation",
+      "type-system"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 10,
+    "directories_changed": 8,
+    "cross_package": false,
+    "insertions": 363,
+    "deletions": 46,
+    "dependency_depth": 8,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 45.9
+  },
+  "contamination": {
+    "issue_created_at": "2022-03-17T20:25:04Z",
+    "pr_merged_at": "2026-03-16T14:16:14Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "cypress/integration/rendering/architecture.spec.ts",
+      "packages/mermaid/src/diagrams/architecture/architecture.spec.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      ".changeset/fix-architecture-deterministic-layout.md",
+      ".gitignore",
+      "cypress/integration/rendering/architecture.spec.ts",
+      "demos/dev/architecture-randomize.html",
+      "docs/syntax/architecture.md",
+      "packages/mermaid/src/config.type.ts",
+      "packages/mermaid/src/diagrams/architecture/architecture.spec.ts",
+      "packages/mermaid/src/diagrams/architecture/architectureRenderer.ts",
+      "packages/mermaid/src/docs/syntax/architecture.md",
+      "packages/mermaid/src/schemas/config.schema.yaml"
+    ],
+    "dependency_chain": [
+      ".changeset/fix-architecture-deterministic-layout.md",
+      ".gitignore",
+      "demos/dev/architecture-randomize.html",
+      "docs/syntax/architecture.md",
+      "packages/mermaid/src/config.type.ts",
+      "packages/mermaid/src/diagrams/architecture/architectureRenderer.ts",
+      "packages/mermaid/src/docs/syntax/architecture.md",
+      "packages/mermaid/src/schemas/config.schema.yaml"
+    ],
+    "min_context_tokens": 20000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

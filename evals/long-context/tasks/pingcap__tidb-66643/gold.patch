@@ -1,0 +1,525 @@
+From e7cee8a906e34ba24b5a35d66ca7b09307194310 Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Tue, 3 Mar 2026 00:27:46 +0000
+Subject: [PATCH 1/7] Allow passing TSO in AS OF TIMESTAMP
+
+---
+ pkg/sessiontxn/staleread/processor_test.go    | 77 +++++++++++++++++++
+ pkg/sessiontxn/staleread/util.go              | 30 ++++++++
+ .../r/executor/stale_txn.result               | 22 ++++++
+ .../integrationtest/t/executor/stale_txn.test | 19 +++++
+ 4 files changed, 148 insertions(+)
+
+diff --git a/pkg/sessiontxn/staleread/processor_test.go b/pkg/sessiontxn/staleread/processor_test.go
+index c2359ae4f007d..2d08517da5dec 100644
+--- a/pkg/sessiontxn/staleread/processor_test.go
++++ b/pkg/sessiontxn/staleread/processor_test.go
+@@ -235,6 +235,83 @@ func TestStaleReadProcessorWithSelectTable(t *testing.T) {
+ 	tk.MustExec("set tidb_enable_external_ts_read=OFF")
+ }
+ 
++func TestStaleReadSupportDateTimeAndTSO(t *testing.T) {
++	store := testkit.CreateMockStore(t, mockstore.WithStoreType(mockstore.EmbedUnistore))
++	tk := testkit.NewTestKit(t, store)
++	p1 := genStaleReadPoint(t, tk)
++	p2 := genStaleReadPoint(t, tk)
++
++	require.NotEqual(t, p1.ts, p2.ts)
++
++	// Reading AS OF TIMESTAMP 'TSO' should be parsed correctly.
++	processor := createProcessor(t, tk.Session())
++	err := processor.OnSelectTable(astTableWithAsOf(t, fmt.Sprintf("%d", p1.ts)))
++	require.NoError(t, err)
++	require.Equal(t, processor.GetStalenessReadTS(), p1.ts)
++
++	// Reading AS OF TIMESTAMP 'TSO' does not lose precision.
++	processor = createProcessor(t, tk.Session())
++	err = processor.OnSelectTable(astTableWithAsOf(t, fmt.Sprintf("%d", p1.ts+1)))
++	require.NoError(t, err)
++	require.Equal(t, processor.GetStalenessReadTS(), p1.ts+1)
++
++	// Reading AS OF TIMESTAMP 'YYYY-MM-DD HH:MM:SS' should be parsed correctly.
++	processor = createProcessor(t, tk.Session())
++	err = processor.OnSelectTable(astTableWithAsOf(t, p1.dt))
++	require.NoError(t, err)
++	require.Equal(t, processor.GetStalenessReadTS(), p1.ts)
++}
++
++func TestStaleReadCompactDateTime(t *testing.T) {
++	store := testkit.CreateMockStore(t, mockstore.WithStoreType(mockstore.EmbedUnistore))
++	tk := testkit.NewTestKit(t, store)
++	p1 := genStaleReadPoint(t, tk)
++
++	// AS OF TIMESTAMP 'YYYYMMDDHHMMSS' is a valid datetime and is parsed as
++	// 'YYYY-MM-DD HH:MM:SS', not as TSO. This is for backward compatibility.
++	compactDatetime := p1.tm.Format("20060102150405") // Go format for YYYYMMDDHHMMSS
++	// Truncate to seconds since compact format doesn't have subsecond precision
++	expectedTSFromDatetime := oracle.GoTimeToTS(p1.tm.Truncate(time.Second))
++
++	processor := createProcessor(t, tk.Session())
++	err := processor.OnSelectTable(astTableWithAsOf(t, compactDatetime))
++	require.NoError(t, err)
++	// The timestamp should match the datetime interpretation, not the raw integer
++	require.Equal(t, expectedTSFromDatetime, processor.GetStalenessReadTS())
++	// Verify it's NOT treated as a raw TSO (which would be a completely different value)
++	compactAsInt, err := strconv.ParseUint(compactDatetime, 10, 64)
++	require.NoError(t, err)
++	require.NotEqual(t, compactAsInt, processor.GetStalenessReadTS())
++}
++
++func TestStaleReadInvalidExpression(t *testing.T) {
++	store := testkit.CreateMockStore(t, mockstore.WithStoreType(mockstore.EmbedUnistore))
++	tk := testkit.NewTestKit(t, store)
++	// Initialize the test table
++	tk.MustExec("create table if not exists test.t(a bigint)")
++
++	// Test invalid formats that can't be parsed as datetime or TSO.
++	// These should return the original datetime parsing error.
++	testCases := []struct {
++		input       string
++		expectedErr string
++	}{
++		{"invalid_timestamp", "Incorrect datetime value: 'invalid_timestamp'"},
++		{"not-a-date", "Incorrect datetime value: 'not-a-date'"},
++		{"2024-13-01 00:00:00", "Incorrect time value"},                            // invalid month
++		{"2024-01-32 00:00:00", "Incorrect datetime value: '2024-01-32 00:00:00'"}, // invalid day
++		{"42", "Incorrect time value: '42'"},     // small integer, not a valid TSO
++		{"0", "Incorrect time value: '0'"},      // zero is not a valid TSO
++	}
++
++	for _, tc := range testCases {
++		processor := createProcessor(t, tk.Session())
++		err := processor.OnSelectTable(astTableWithAsOf(t, tc.input))
++		require.Error(t, err, "expected error for invalid format: %s", tc.input)
++		require.Contains(t, err.Error(), tc.expectedErr, "unexpected error message for: %s", tc.input)
++	}
++}
++
+ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
+ 	store := testkit.CreateMockStore(t, mockstore.WithStoreType(mockstore.EmbedUnistore))
+ 	tk := testkit.NewTestKit(t, store)
+diff --git a/pkg/sessiontxn/staleread/util.go b/pkg/sessiontxn/staleread/util.go
+index 58e4dc5e27147..982e33d92a08c 100644
+--- a/pkg/sessiontxn/staleread/util.go
++++ b/pkg/sessiontxn/staleread/util.go
+@@ -16,6 +16,7 @@ package staleread
+ 
+ import (
+ 	"context"
++	"strconv"
+ 	"time"
+ 
+ 	"github.com/pingcap/failpoint"
+@@ -52,6 +53,35 @@ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr a
+ 		return 0, plannererrors.ErrAsOf.FastGenWithCause("as of timestamp cannot be NULL")
+ 	}
+ 
++	// We first try to parse as a datetime, and only fall back to parsing as a raw TSO if the datetime conversion fails.
++	// Note that this behaves differently than `tidb_snapshot` for compact dates such as 'YYYYMMDDHHMMSS' or 'YYYYMMDDHH',
++	// that can parse both as date time and integers. `tidb_snapshot` treats them as integers, while we parse them as datetimes,
++	// to maintain backwards compatibility.
++	ts, datetimeErr := parseTsExprAsDatetime(ctx, sctx, tsVal)
++	if datetimeErr == nil {
++		return ts, nil
++	}
++
++	// If datetime conversion failed, try to parse as a TiDB TSO (not a Unix timestamp).
++	// A TiDB TSO encodes a physical timestamp (ms since epoch) in the high bits and a logical
++	// counter in the low 18 bits. We validate that the physical component represents a
++	// reasonable time (after 2013-01-01).
++	if tsVal.Kind() == types.KindString || tsVal.Kind() == types.KindBytes {
++		if tso, err := strconv.ParseUint(tsVal.GetString(), 10, 64); err == nil {
++			physicalMS := oracle.ExtractPhysical(tso)
++			// 1356998400000 ms = 2013-01-01T00:00:00Z, a reasonable lower bound for any TiDB TSO.
++			if physicalMS > 1356998400000 {
++				return tso, nil
++			}
++		}
++	}
++
++	return 0, datetimeErr
++}
++
++// parseTsExprAsDatetime tries to parse the value as a datetime and convert it to TSO.
++// It handles all valid datetime formats including compact format like YYYYMMDDHHMMSS.
++func parseTsExprAsDatetime(_ context.Context, sctx planctx.PlanContext, tsVal types.Datum) (uint64, error) {
+ 	toTypeTimestamp := types.NewFieldType(mysql.TypeTimestamp)
+ 	// We need at least the millisecond here, so set fsp to 3.
+ 	toTypeTimestamp.SetDecimal(3)
+diff --git a/tests/integrationtest/r/executor/stale_txn.result b/tests/integrationtest/r/executor/stale_txn.result
+index 0dd65a62c6d5e..d1861ba7bab83 100644
+--- a/tests/integrationtest/r/executor/stale_txn.result
++++ b/tests/integrationtest/r/executor/stale_txn.result
+@@ -42,3 +42,25 @@ select * from t1 as of timestamp NULL;
+ Error 8135 (HY000): invalid as of timestamp: as of timestamp cannot be NULL
+ start transaction read only as of timestamp NULL;
+ Error 8135 (HY000): invalid as of timestamp: as of timestamp cannot be NULL
++drop table if exists t1;
++create table t1 (value int);
++insert into t1 values (1);
++insert into t1 values (2);
++set @last_commit_ts = json_extract(@@tidb_last_txn_info, '$.commit_ts');
++set @prev_commit_ts = cast(cast(@last_commit_ts as unsigned) - 1 as char);
++select count(*) as prev_count from t1 as of timestamp @prev_commit_ts;
++prev_count
++1
++select count(*) as exact_count from t1 as of timestamp @last_commit_ts;
++exact_count
++2
++select count(*) from t1 as of timestamp 'invalid-date';
++Error 1292 (22007): Incorrect datetime value: 'invalid-date'
++start transaction read only as of timestamp @last_commit_ts;
++select @@tidb_current_ts = CAST(@last_commit_ts AS UNSIGNED) AS ts_matches;
++ts_matches
++1
++select count(*) as count_from_txn from t1;
++count_from_txn
++2
++commit;
+diff --git a/tests/integrationtest/t/executor/stale_txn.test b/tests/integrationtest/t/executor/stale_txn.test
+index fd54eda0cd87c..1e0ac1c6c4c99 100644
+--- a/tests/integrationtest/t/executor/stale_txn.test
++++ b/tests/integrationtest/t/executor/stale_txn.test
+@@ -39,3 +39,22 @@ create table t1 (id int primary key, v int);
+ select * from t1 as of timestamp NULL;
+ --error 8135
+ start transaction read only as of timestamp NULL;
++
++# TestAsOfTimestampSupportTSO
++drop table if exists t1;
++create table t1 (value int);
++
++insert into t1 values (1);
++insert into t1 values (2);
++set @last_commit_ts = json_extract(@@tidb_last_txn_info, '$.commit_ts');
++set @prev_commit_ts = cast(cast(@last_commit_ts as unsigned) - 1 as char);
++
++select count(*) as prev_count from t1 as of timestamp @prev_commit_ts;
++select count(*) as exact_count from t1 as of timestamp @last_commit_ts;
++--error 1292
++select count(*) from t1 as of timestamp 'invalid-date';
++
++start transaction read only as of timestamp @last_commit_ts;
++select @@tidb_current_ts = CAST(@last_commit_ts AS UNSIGNED) AS ts_matches;
++select count(*) as count_from_txn from t1;
++commit;
+
+From ba849830eda3d5e4a0f57481000afa0557411835 Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Thu, 12 Mar 2026 21:25:08 +0000
+Subject: [PATCH 2/7] Address comments
+
+---
+ pkg/sessiontxn/staleread/processor_test.go    |  4 +-
+ pkg/sessiontxn/staleread/util.go              | 44 ++++++++++++++-----
+ .../r/executor/stale_txn.result               |  4 ++
+ .../integrationtest/t/executor/stale_txn.test |  5 +++
+ 4 files changed, 44 insertions(+), 13 deletions(-)
+
+diff --git a/pkg/sessiontxn/staleread/processor_test.go b/pkg/sessiontxn/staleread/processor_test.go
+index 2d08517da5dec..1f66635c83484 100644
+--- a/pkg/sessiontxn/staleread/processor_test.go
++++ b/pkg/sessiontxn/staleread/processor_test.go
+@@ -300,8 +300,8 @@ func TestStaleReadInvalidExpression(t *testing.T) {
+ 		{"not-a-date", "Incorrect datetime value: 'not-a-date'"},
+ 		{"2024-13-01 00:00:00", "Incorrect time value"},                            // invalid month
+ 		{"2024-01-32 00:00:00", "Incorrect datetime value: '2024-01-32 00:00:00'"}, // invalid day
+-		{"42", "Incorrect time value: '42'"},     // small integer, not a valid TSO
+-		{"0", "Incorrect time value: '0'"},      // zero is not a valid TSO
++		{"42", "invalid TSO timestamp: TSO is before 2013-01-01"}, // small integer, not a valid TSO
++		{"0", "invalid TSO timestamp: TSO is before 2013-01-01"}, // zero is not a valid TSO
+ 	}
+ 
+ 	for _, tc := range testCases {
+diff --git a/pkg/sessiontxn/staleread/util.go b/pkg/sessiontxn/staleread/util.go
+index 982e33d92a08c..6bc6a07679821 100644
+--- a/pkg/sessiontxn/staleread/util.go
++++ b/pkg/sessiontxn/staleread/util.go
+@@ -64,19 +64,41 @@ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr a
+ 
+ 	// If datetime conversion failed, try to parse as a TiDB TSO (not a Unix timestamp).
+ 	// A TiDB TSO encodes a physical timestamp (ms since epoch) in the high bits and a logical
+-	// counter in the low 18 bits. We validate that the physical component represents a
+-	// reasonable time (after 2013-01-01).
+-	if tsVal.Kind() == types.KindString || tsVal.Kind() == types.KindBytes {
+-		if tso, err := strconv.ParseUint(tsVal.GetString(), 10, 64); err == nil {
+-			physicalMS := oracle.ExtractPhysical(tso)
+-			// 1356998400000 ms = 2013-01-01T00:00:00Z, a reasonable lower bound for any TiDB TSO.
+-			if physicalMS > 1356998400000 {
+-				return tso, nil
+-			}
+-		}
++	// counter in the low 18 bits
++	tso, tsoErr := tsoFromDatum(tsVal)
++	if tsoErr != nil {
++		return 0, datetimeErr
++	}
++	physicalMS := oracle.ExtractPhysical(tso)
++	// 1356998400000 ms = 2013-01-01T00:00:00Z, a reasonable lower bound for any TiDB TSO
++	if physicalMS <= 1356998400000 {
++		return 0, plannererrors.ErrAsOf.FastGenWithCause("invalid TSO timestamp: TSO is before 2013-01-01")
+ 	}
++	// Validate that the TSO does not exceed the current PD timestamp to preserve
++	// linearizability when async commit is enabled
++	if err := sessionctx.ValidateSnapshotReadTS(ctx, sctx.GetStore(), tso, true); err != nil {
++		return 0, err
++	}
++	return tso, nil
++}
+ 
+-	return 0, datetimeErr
++// tsoFromDatum extracts a uint64 TSO value from a Datum.
++func tsoFromDatum(d types.Datum) (uint64, error) {
++	switch d.Kind() {
++	case types.KindString, types.KindBytes:
++		if tso, err := strconv.ParseUint(d.GetString(), 10, 64); err == nil {
++			return tso, nil
++		}
++	case types.KindInt64:
++		if v := d.GetInt64(); v > 0 {
++			return uint64(v), nil
++		}
++	case types.KindUint64:
++		if v := d.GetUint64(); v > 0 {
++			return v, nil
++		}
++	}
++	return 0, plannererrors.ErrAsOf.FastGenWithCause("cannot parse AS OF TIMESTAMP expression as TSO")
+ }
+ 
+ // parseTsExprAsDatetime tries to parse the value as a datetime and convert it to TSO.
+diff --git a/tests/integrationtest/r/executor/stale_txn.result b/tests/integrationtest/r/executor/stale_txn.result
+index d1861ba7bab83..61404d6b7954b 100644
+--- a/tests/integrationtest/r/executor/stale_txn.result
++++ b/tests/integrationtest/r/executor/stale_txn.result
+@@ -64,3 +64,7 @@ select count(*) as count_from_txn from t1;
+ count_from_txn
+ 2
+ commit;
++set @int_tso = cast(@last_commit_ts as unsigned);
++select count(*) as int_tso_count from t1 as of timestamp @int_tso;
++int_tso_count
++2
+diff --git a/tests/integrationtest/t/executor/stale_txn.test b/tests/integrationtest/t/executor/stale_txn.test
+index 1e0ac1c6c4c99..cf16f7449468d 100644
+--- a/tests/integrationtest/t/executor/stale_txn.test
++++ b/tests/integrationtest/t/executor/stale_txn.test
+@@ -58,3 +58,8 @@ start transaction read only as of timestamp @last_commit_ts;
+ select @@tidb_current_ts = CAST(@last_commit_ts AS UNSIGNED) AS ts_matches;
+ select count(*) as count_from_txn from t1;
+ commit;
++
++# TestAsOfTimestampSupportIntegerTSO
++# Verify that CAST(@tso AS UNSIGNED) works directly in AS OF TIMESTAMP.
++set @int_tso = cast(@last_commit_ts as unsigned);
++select count(*) as int_tso_count from t1 as of timestamp @int_tso;
+
+From 12eed7dee99042b9154ee82bb4929674ce3dc6e1 Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Fri, 13 Mar 2026 00:36:12 +0000
+Subject: [PATCH 3/7] Update error code
+
+---
+ pkg/sessiontxn/staleread/processor_test.go | 13 ++++++-------
+ pkg/sessiontxn/staleread/util.go           | 19 ++++++++++---------
+ 2 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/pkg/sessiontxn/staleread/processor_test.go b/pkg/sessiontxn/staleread/processor_test.go
+index 1f66635c83484..e9bc513203e0f 100644
+--- a/pkg/sessiontxn/staleread/processor_test.go
++++ b/pkg/sessiontxn/staleread/processor_test.go
+@@ -291,17 +291,16 @@ func TestStaleReadInvalidExpression(t *testing.T) {
+ 	tk.MustExec("create table if not exists test.t(a bigint)")
+ 
+ 	// Test invalid formats that can't be parsed as datetime or TSO.
+-	// These should return the original datetime parsing error.
+ 	testCases := []struct {
+ 		input       string
+ 		expectedErr string
+ 	}{
+-		{"invalid_timestamp", "Incorrect datetime value: 'invalid_timestamp'"},
+-		{"not-a-date", "Incorrect datetime value: 'not-a-date'"},
+-		{"2024-13-01 00:00:00", "Incorrect time value"},                            // invalid month
+-		{"2024-01-32 00:00:00", "Incorrect datetime value: '2024-01-32 00:00:00'"}, // invalid day
+-		{"42", "invalid TSO timestamp: TSO is before 2013-01-01"}, // small integer, not a valid TSO
+-		{"0", "invalid TSO timestamp: TSO is before 2013-01-01"}, // zero is not a valid TSO
++		{"invalid_timestamp", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"},
++		{"not-a-date", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"},
++		{"2024-13-01 00:00:00", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"}, // invalid month
++		{"2024-01-32 00:00:00", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"}, // invalid day
++		{"42", "invalid TSO timestamp: TSO is before 2013-01-01"},                              // small integer, not a valid TSO
++		{"0", "invalid TSO timestamp: TSO is before 2013-01-01"},                               // zero is not a valid TSO
+ 	}
+ 
+ 	for _, tc := range testCases {
+diff --git a/pkg/sessiontxn/staleread/util.go b/pkg/sessiontxn/staleread/util.go
+index 6bc6a07679821..e715a0a61c2ca 100644
+--- a/pkg/sessiontxn/staleread/util.go
++++ b/pkg/sessiontxn/staleread/util.go
+@@ -65,12 +65,13 @@ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr a
+ 	// If datetime conversion failed, try to parse as a TiDB TSO (not a Unix timestamp).
+ 	// A TiDB TSO encodes a physical timestamp (ms since epoch) in the high bits and a logical
+ 	// counter in the low 18 bits
+-	tso, tsoErr := tsoFromDatum(tsVal)
+-	if tsoErr != nil {
+-		return 0, datetimeErr
++	tso, ok := tsoFromDatum(tsVal)
++	if !ok {
++		return 0, plannererrors.ErrAsOf.FastGenWithCause("cannot parse AS OF TIMESTAMP expression as datetime or TSO")
+ 	}
+-	physicalMS := oracle.ExtractPhysical(tso)
++
+ 	// 1356998400000 ms = 2013-01-01T00:00:00Z, a reasonable lower bound for any TiDB TSO
++	physicalMS := oracle.ExtractPhysical(tso)
+ 	if physicalMS <= 1356998400000 {
+ 		return 0, plannererrors.ErrAsOf.FastGenWithCause("invalid TSO timestamp: TSO is before 2013-01-01")
+ 	}
+@@ -83,22 +84,22 @@ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr a
+ }
+ 
+ // tsoFromDatum extracts a uint64 TSO value from a Datum.
+-func tsoFromDatum(d types.Datum) (uint64, error) {
++func tsoFromDatum(d types.Datum) (uint64, bool) {
+ 	switch d.Kind() {
+ 	case types.KindString, types.KindBytes:
+ 		if tso, err := strconv.ParseUint(d.GetString(), 10, 64); err == nil {
+-			return tso, nil
++			return tso, true
+ 		}
+ 	case types.KindInt64:
+ 		if v := d.GetInt64(); v > 0 {
+-			return uint64(v), nil
++			return uint64(v), true
+ 		}
+ 	case types.KindUint64:
+ 		if v := d.GetUint64(); v > 0 {
+-			return v, nil
++			return v, true
+ 		}
+ 	}
+-	return 0, plannererrors.ErrAsOf.FastGenWithCause("cannot parse AS OF TIMESTAMP expression as TSO")
++	return 0, false
+ }
+ 
+ // parseTsExprAsDatetime tries to parse the value as a datetime and convert it to TSO.
+
+From da145cc3a9f903e0380dedcf21f05545348b6c9d Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Fri, 13 Mar 2026 00:37:46 +0000
+Subject: [PATCH 4/7] Update integration tests
+
+---
+ tests/integrationtest/r/executor/stale_txn.result | 2 +-
+ tests/integrationtest/t/executor/stale_txn.test   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/integrationtest/r/executor/stale_txn.result b/tests/integrationtest/r/executor/stale_txn.result
+index 61404d6b7954b..d69b16b0b60ca 100644
+--- a/tests/integrationtest/r/executor/stale_txn.result
++++ b/tests/integrationtest/r/executor/stale_txn.result
+@@ -55,7 +55,7 @@ select count(*) as exact_count from t1 as of timestamp @last_commit_ts;
+ exact_count
+ 2
+ select count(*) from t1 as of timestamp 'invalid-date';
+-Error 1292 (22007): Incorrect datetime value: 'invalid-date'
++Error 8135 (HY000): invalid as of timestamp: cannot parse AS OF TIMESTAMP expression as datetime or TSO
+ start transaction read only as of timestamp @last_commit_ts;
+ select @@tidb_current_ts = CAST(@last_commit_ts AS UNSIGNED) AS ts_matches;
+ ts_matches
+diff --git a/tests/integrationtest/t/executor/stale_txn.test b/tests/integrationtest/t/executor/stale_txn.test
+index cf16f7449468d..a628a473c6f28 100644
+--- a/tests/integrationtest/t/executor/stale_txn.test
++++ b/tests/integrationtest/t/executor/stale_txn.test
+@@ -51,7 +51,7 @@ set @prev_commit_ts = cast(cast(@last_commit_ts as unsigned) - 1 as char);
+ 
+ select count(*) as prev_count from t1 as of timestamp @prev_commit_ts;
+ select count(*) as exact_count from t1 as of timestamp @last_commit_ts;
+---error 1292
++--error 8135
+ select count(*) from t1 as of timestamp 'invalid-date';
+ 
+ start transaction read only as of timestamp @last_commit_ts;
+
+From 0ae19a5c81f10f0ec78051e81da5e74316dd98b4 Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Mon, 23 Mar 2026 23:42:30 +0000
+Subject: [PATCH 5/7] Replace magic number with constant
+
+---
+ pkg/sessiontxn/staleread/util.go | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/pkg/sessiontxn/staleread/util.go b/pkg/sessiontxn/staleread/util.go
+index e715a0a61c2ca..84f25c2f1d293 100644
+--- a/pkg/sessiontxn/staleread/util.go
++++ b/pkg/sessiontxn/staleread/util.go
+@@ -33,6 +33,10 @@ import (
+ 	"github.com/tikv/client-go/v2/oracle"
+ )
+ 
++// minTSO is 2013-01-01T00:00:00Z in milliseconds since epoch.
++// Serves as a reasonable lower bound for any TiDB physical TSO.
++const minTSO = 1356998400000
++
+ // CalculateAsOfTsExpr calculates the TsExpr of AsOfClause to get a StartTS.
+ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr ast.ExprNode) (uint64, error) {
+ 	sctx.GetSessionVars().StmtCtx.SetStaleTSOProviderIfNotExist(func() (uint64, error) {
+@@ -70,9 +74,8 @@ func CalculateAsOfTsExpr(ctx context.Context, sctx planctx.PlanContext, tsExpr a
+ 		return 0, plannererrors.ErrAsOf.FastGenWithCause("cannot parse AS OF TIMESTAMP expression as datetime or TSO")
+ 	}
+ 
+-	// 1356998400000 ms = 2013-01-01T00:00:00Z, a reasonable lower bound for any TiDB TSO
+ 	physicalMS := oracle.ExtractPhysical(tso)
+-	if physicalMS <= 1356998400000 {
++	if physicalMS <= minTSO {
+ 		return 0, plannererrors.ErrAsOf.FastGenWithCause("invalid TSO timestamp: TSO is before 2013-01-01")
+ 	}
+ 	// Validate that the TSO does not exceed the current PD timestamp to preserve
+
+From a1970f4eb3854cb85da46ba892cf234277120fd4 Mon Sep 17 00:00:00 2001
+From: madhavramesh <madhavramesh02@gmail.com>
+Date: Wed, 25 Mar 2026 00:11:19 +0000
+Subject: [PATCH 6/7] Fix nogo error
+
+---
+ pkg/sessiontxn/staleread/processor_test.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pkg/sessiontxn/staleread/processor_test.go b/pkg/sessiontxn/staleread/processor_test.go
+index e9bc513203e0f..eb13a942097f3 100644
+--- a/pkg/sessiontxn/staleread/processor_test.go
++++ b/pkg/sessiontxn/staleread/processor_test.go
+@@ -299,8 +299,8 @@ func TestStaleReadInvalidExpression(t *testing.T) {
+ 		{"not-a-date", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"},
+ 		{"2024-13-01 00:00:00", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"}, // invalid month
+ 		{"2024-01-32 00:00:00", "cannot parse AS OF TIMESTAMP expression as datetime or TSO"}, // invalid day
+-		{"42", "invalid TSO timestamp: TSO is before 2013-01-01"},                              // small integer, not a valid TSO
+-		{"0", "invalid TSO timestamp: TSO is before 2013-01-01"},                               // zero is not a valid TSO
++		{"42", "invalid TSO timestamp: TSO is before 2013-01-01"},                             // small integer, not a valid TSO
++		{"0", "invalid TSO timestamp: TSO is before 2013-01-01"},                              // zero is not a valid TSO
+ 	}
+ 
+ 	for _, tc := range testCases {
+
+From b285e96f24c9fb54d0e0560793de935d0c7d8357 Mon Sep 17 00:00:00 2001
+From: madhavramesh <44104526+madhavramesh@users.noreply.github.com>
+Date: Wed, 25 Mar 2026 04:39:48 +0000
+Subject: [PATCH 7/7] chore: update bazel file
+
+---
+ pkg/sessiontxn/staleread/BUILD.bazel | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pkg/sessiontxn/staleread/BUILD.bazel b/pkg/sessiontxn/staleread/BUILD.bazel
+index 19316c270902a..aac026f56b4a5 100644
+--- a/pkg/sessiontxn/staleread/BUILD.bazel
++++ b/pkg/sessiontxn/staleread/BUILD.bazel
+@@ -47,7 +47,7 @@ go_test(
+         "provider_test.go",
+     ],
+     flaky = True,
+-    shard_count = 9,
++    shard_count = 12,
+     deps = [
+         ":staleread",
+         "//pkg/domain",

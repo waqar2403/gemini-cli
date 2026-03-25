@@ -1,0 +1,207 @@
+From e5b55dd6dfb3d3ccf26a0d075d3ed30b034ca52f Mon Sep 17 00:00:00 2001
+From: Fan Kai <fankai@onero.com>
+Date: Wed, 25 Mar 2026 17:25:10 +0800
+Subject: [PATCH] Fix Meter Pro CO2 not discoverable via BT proxies
+
+- Add METER_PRO_C back to NON_CONNECTABLE_SUPPORTED_MODEL_TYPES while
+  keeping it in CONNECTABLE_SUPPORTED_MODEL_TYPES.
+- Update config_flow to allow auto-discovery from non-connectable sources
+  for devices that support both connectable and non-connectable operation.
+- Update async_setup_entry to use non-connectable BLE lookup for
+  dual-mode devices so setup succeeds via passive BT proxies.
+- Add complete tests for Meter Pro CO2 discovery from non-connectable source.
+
+PR #163008 moved METER_PRO_C to connectable-only, which broke discovery
+and setup via passive BT proxies (Shelly/ESPHome).
+
+Fixes #164817
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ .../components/switchbot/__init__.py          |  6 +++-
+ .../components/switchbot/config_flow.py       |  3 +-
+ homeassistant/components/switchbot/const.py   |  1 +
+ tests/components/switchbot/__init__.py        | 24 +++++++++++++++
+ .../components/switchbot/test_config_flow.py  | 30 +++++++++++++++++++
+ tests/components/switchbot/test_init.py       | 27 +++++++++++++++++
+ 6 files changed, 89 insertions(+), 2 deletions(-)
+
+diff --git a/homeassistant/components/switchbot/__init__.py b/homeassistant/components/switchbot/__init__.py
+index c002318d6da69..ace5061dfe627 100644
+--- a/homeassistant/components/switchbot/__init__.py
++++ b/homeassistant/components/switchbot/__init__.py
+@@ -33,6 +33,7 @@
+     DOMAIN,
+     ENCRYPTED_MODELS,
+     HASS_SENSOR_TYPE_TO_SWITCHBOT_MODEL,
++    NON_CONNECTABLE_SUPPORTED_MODEL_TYPES,
+     SupportedModels,
+ )
+ from .coordinator import SwitchbotConfigEntry, SwitchbotDataUpdateCoordinator
+@@ -198,7 +199,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwitchbotConfigEntry) ->
+     sensor_type: str = entry.data[CONF_SENSOR_TYPE]
+     switchbot_model = HASS_SENSOR_TYPE_TO_SWITCHBOT_MODEL[sensor_type]
+     # connectable means we can make connections to the device
+-    connectable = switchbot_model in CONNECTABLE_SUPPORTED_MODEL_TYPES
++    connectable = (
++        switchbot_model in CONNECTABLE_SUPPORTED_MODEL_TYPES
++        and switchbot_model not in NON_CONNECTABLE_SUPPORTED_MODEL_TYPES
++    )
+     address: str = entry.data[CONF_ADDRESS]
+ 
+     await switchbot.close_stale_connections_by_address(address)
+diff --git a/homeassistant/components/switchbot/config_flow.py b/homeassistant/components/switchbot/config_flow.py
+index 35e8f8419ed2d..0a1816a67abc1 100644
+--- a/homeassistant/components/switchbot/config_flow.py
++++ b/homeassistant/components/switchbot/config_flow.py
+@@ -113,8 +113,9 @@ async def async_step_bluetooth(
+         if (
+             not discovery_info.connectable
+             and model_name in CONNECTABLE_SUPPORTED_MODEL_TYPES
++            and model_name not in NON_CONNECTABLE_SUPPORTED_MODEL_TYPES
+         ):
+-            # Source is not connectable but the model is connectable
++            # Source is not connectable but the model is connectable only
+             return self.async_abort(reason="not_supported")
+         self._discovered_adv = parsed
+         data = parsed.data
+diff --git a/homeassistant/components/switchbot/const.py b/homeassistant/components/switchbot/const.py
+index a94c52dba816b..f086235d414d4 100644
+--- a/homeassistant/components/switchbot/const.py
++++ b/homeassistant/components/switchbot/const.py
+@@ -113,6 +113,7 @@ class SupportedModels(StrEnum):
+     SwitchbotModel.METER: SupportedModels.HYGROMETER,
+     SwitchbotModel.IO_METER: SupportedModels.HYGROMETER,
+     SwitchbotModel.METER_PRO: SupportedModels.HYGROMETER,
++    SwitchbotModel.METER_PRO_C: SupportedModels.HYGROMETER_CO2,
+     SwitchbotModel.CONTACT_SENSOR: SupportedModels.CONTACT,
+     SwitchbotModel.MOTION_SENSOR: SupportedModels.MOTION,
+     SwitchbotModel.PRESENCE_SENSOR: SupportedModels.PRESENCE_SENSOR,
+diff --git a/tests/components/switchbot/__init__.py b/tests/components/switchbot/__init__.py
+index dc9bf76b7b12f..292e557f9ed64 100644
+--- a/tests/components/switchbot/__init__.py
++++ b/tests/components/switchbot/__init__.py
+@@ -239,6 +239,30 @@ def patch_async_ble_device_from_address(return_value: BluetoothServiceInfoBleak
+     tx_power=-127,
+ )
+ 
++WOMETERTHPC_SERVICE_INFO_NOT_CONNECTABLE = BluetoothServiceInfoBleak(
++    name="WoTHPc",
++    manufacturer_data={
++        2409: b"\xb0\xe9\xfeT2\x15\xb7\xe4\x07\x9b\xa4\x007\x02\xd5\x00"
++    },
++    service_data={"0000fd3d-0000-1000-8000-00805f9b34fb": b"5\x00d"},
++    service_uuids=["cba20d00-224d-11e6-9fb8-0002a5d5c51b"],
++    address="AA:BB:CC:DD:EE:FF",
++    rssi=-60,
++    source="local",
++    advertisement=generate_advertisement_data(
++        local_name="WoTHPc",
++        manufacturer_data={
++            2409: b"\xb0\xe9\xfeT2\x15\xb7\xe4\x07\x9b\xa4\x007\x02\xd5\x00"
++        },
++        service_data={"0000fd3d-0000-1000-8000-00805f9b34fb": b"5\x00d"},
++        service_uuids=["cba20d00-224d-11e6-9fb8-0002a5d5c51b"],
++    ),
++    device=generate_ble_device("AA:BB:CC:DD:EE:FF", "WoTHPc"),
++    time=0,
++    connectable=False,
++    tx_power=-127,
++)
++
+ WORELAY_SWITCH_1PM_SERVICE_INFO = BluetoothServiceInfoBleak(
+     name="W1080000",
+     manufacturer_data={2409: b"$X|\x0866G\x81\x00\x00\x001\x00\x00\x00\x00"},
+diff --git a/tests/components/switchbot/test_config_flow.py b/tests/components/switchbot/test_config_flow.py
+index eb9a3356c1526..8973f5a2a5ee2 100644
+--- a/tests/components/switchbot/test_config_flow.py
++++ b/tests/components/switchbot/test_config_flow.py
+@@ -34,6 +34,7 @@
+     WOHAND_SERVICE_INFO,
+     WOHAND_SERVICE_INFO_NOT_CONNECTABLE,
+     WOLOCK_SERVICE_INFO,
++    WOMETERTHPC_SERVICE_INFO_NOT_CONNECTABLE,
+     WORELAY_SWITCH_1PM_SERVICE_INFO,
+     WOSENSORTH_SERVICE_INFO,
+     init_integration,
+@@ -264,6 +265,35 @@ async def test_async_step_bluetooth_not_connectable(hass: HomeAssistant) -> None
+     assert result["reason"] == "not_supported"
+ 
+ 
++async def test_async_step_bluetooth_meter_pro_co2_not_connectable(
++    hass: HomeAssistant,
++) -> None:
++    """Test discovery via bluetooth for Meter Pro CO2 from a non-connectable source."""
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN,
++        context={"source": SOURCE_BLUETOOTH},
++        data=WOMETERTHPC_SERVICE_INFO_NOT_CONNECTABLE,
++    )
++    assert result["type"] is FlowResultType.FORM
++    assert result["step_id"] == "confirm"
++
++    with patch_async_setup_entry() as mock_setup_entry:
++        result = await hass.config_entries.flow.async_configure(
++            result["flow_id"],
++            {},
++        )
++    await hass.async_block_till_done()
++
++    assert result["type"] is FlowResultType.CREATE_ENTRY
++    assert result["title"] == "Meter Pro CO2 EEFF"
++    assert result["data"] == {
++        CONF_ADDRESS: "AA:BB:CC:DD:EE:FF",
++        CONF_SENSOR_TYPE: "hygrometer_co2",
++    }
++
++    assert len(mock_setup_entry.mock_calls) == 1
++
++
+ @pytest.mark.usefixtures("mock_scanners_all_passive")
+ async def test_user_setup_wohand(hass: HomeAssistant) -> None:
+     """Test the user initiated form with password and valid mac."""
+diff --git a/tests/components/switchbot/test_init.py b/tests/components/switchbot/test_init.py
+index 6e24187228e39..ec5f38e507ce2 100644
+--- a/tests/components/switchbot/test_init.py
++++ b/tests/components/switchbot/test_init.py
+@@ -19,6 +19,7 @@
+     HUBMINI_MATTER_SERVICE_INFO,
+     LOCK_SERVICE_INFO,
+     WOCURTAIN_SERVICE_INFO,
++    WOMETERTHPC_SERVICE_INFO,
+     WOSENSORTH_SERVICE_INFO,
+     patch_async_ble_device_from_address,
+ )
+@@ -78,6 +79,32 @@ async def test_setup_entry_without_ble_device(
+     )
+ 
+ 
++async def test_setup_entry_meter_pro_co2_uses_non_connectable(
++    hass: HomeAssistant,
++    mock_entry_factory: Callable[[str], MockConfigEntry],
++) -> None:
++    """Test that Meter Pro CO2 setup uses connectable=False for BLE lookup.
++
++    Meter Pro CO2 is in both CONNECTABLE and NON_CONNECTABLE model types,
++    so async_ble_device_from_address should be called with connectable=False
++    to support passive BT proxies.
++    """
++    inject_bluetooth_service_info(hass, WOMETERTHPC_SERVICE_INFO)
++
++    entry = mock_entry_factory("hygrometer_co2")
++    entry.add_to_hass(hass)
++
++    with patch(
++        "homeassistant.components.bluetooth.async_ble_device_from_address",
++    ) as mock_ble:
++        mock_ble.return_value = WOMETERTHPC_SERVICE_INFO.device
++        await hass.config_entries.async_setup(entry.entry_id)
++        await hass.async_block_till_done()
++
++        # connectable should be False since METER_PRO_C is in both lists
++        assert mock_ble.call_args_list[0][0][2] is False
++
++
+ async def test_coordinator_wait_ready_timeout(
+     hass: HomeAssistant,
+     mock_entry_factory: Callable[[str], MockConfigEntry],

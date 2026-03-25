@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "instance_id": "openclaw__openclaw-48494",
+  "repo": {
+    "full_name": "openclaw/openclaw",
+    "url": "https://github.com/openclaw/openclaw",
+    "base_commit": "abce64077278dd47c2de85d51c882770d4cf253e",
+    "primary_language": "TypeScript",
+    "languages": [
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "### Summary\n\nWhen requireMention: true is set on a WhatsApp group, swipe-replying to the bot's messages does not trigger a response. The bot silently ignores the reply. This is because WhatsApp migrated to LID (Linked Identity Device) format for user identities, and OpenClaw's applyGroupGating function only compares the quoted message sender against the traditional @s.whatsapp.net JID -- never against the @lid format.\nRelated: #11758 (same root cause, different symptom -- that issue covers explicit @mentions, this one covers implicit reply-to-bot detection)\n\n### Steps to reproduce\n\nConfigure a WhatsApp group with requireMention: true\nHave the bot send a message in the group\nSwipe-reply to the bot's message (on iPhone or WhatsApp Web) without typing the bot's name\nThe bot ignores the reply\n\n### Expected behavior\n\nReply-to-bot should count as an implicit mention (as documented) and trigger a response.\n\n### Actual behavior\n\nThe reply is silently dropped. The implicit mention check fails because the quoted message sender comes back in LID format (XXXXXXXXXXXX@lid) instead of the expected JID format (1XXXXXXXXXX@s.whatsapp.net).\n\n### OpenClaw version\n\nOpenClaw Version: 2026.2.17 (4134875)\n\n### Operating system\n\nOS: macOS (Apple Silicon, Mac Mini M4)\n\n### Install method\n\nNode: v22\n\n### Logs, screenshots, and evidence\n\n```shell\nEnabling debug logging on inbound messages shows the reply context IS being delivered by Baileys, but in LID format:\njson{\n  \"keys\": [\"extendedTextMessage\", \"messageContextInfo\"],\n  \"hasContext\": true,\n  \"participant\": \"XXXXXXXXXXXX@lid\"\n}\nThe bot's creds.json contains both identity formats:\njson\"me\": {\n  \"id\": \"1XXXXXXXXXX:1@s.whatsapp.net\",\n  \"lid\": \"XXXXXXXXXXXX:1@lid\"\n}\n```\n\n### Impact and severity\n\nSeverity: Medium\nImpact: For anyone using requireMention: true on WhatsApp groups, reply-to-bot (implicit mention) is completely broken if their account uses WhatsApp's LID format. Users must type the bot's name every time instead of just swiping to reply. This appears to be an expanding issue as WhatsApp continues migrating accounts to LID.\n\n### Additional information\n\nRoot Cause\nIn channel-web-*.js, the applyGroupGating function computes implicitMention by comparing replySenderJid against selfJid and selfE164. It never extracts or compares the bot's LID. Since WhatsApp now returns the LID in the quoted message context, the comparison always fails.\nFix (3 edits to channel-web-*.js)\nAll edits are in the compiled WhatsApp channel file (dist/channel-web-*.js). The equivalent changes would apply to the TypeScript source.\nEdit 1: Capture selfLid from Baileys socket (near socket init)\njavascript// BEFORE:\nconst selfJid = sock.user?.id;\n\n// AFTER:\nconst selfJid = sock.user?.id;\nconst selfLid = sock.user?.lid;\nEdit 2: Pass selfLid into the inbound message object\nAdd selfLid, right after selfJid, in the message object that gets passed to applyGroupGating:\njavascriptselfJid,\nselfLid,   // <-- add this line\nselfE164,\nEdit 3: Add LID comparison to implicit mention check\njavascript// BEFORE:\nimplicitMention: Boolean(\n  selfJid && replySenderJid && selfJid === replySenderJid ||\n  selfE164 && replySenderE164 && selfE164 === replySenderE164\n),\n\n// AFTER:\nconst selfLidBare = params.msg.selfLid?.replace(/:\\d+/, \"\");\n// ...\nimplicitMention: Boolean(\n  selfJid && replySenderJid && selfJid === replySenderJid ||\n  selfLidBare && replySenderJid && selfLidBare === replySenderJid ||\n  selfE164 && replySenderE164 && selfE164 === replySenderE164\n),\nThe key insight: selfLid from creds.json has a device suffix (e.g., XXXXXXXXXXXX:1@lid) but the replySenderJid from the quoted message context has it stripped (e.g., XXXXXXXXXXXX@lid). The .replace(/:\\d+/, \"\") normalizes this.\nGotcha\nIf you're patching the compiled JS with sed, be careful: the selfJid, pattern may match in multiple places. In my case, it matched at both the connection handler (correct) and a debug logging function (wrong). Adding selfLid, to the debug function caused a ReferenceError: selfLid is not defined crash because that variable isn't in scope there. Fix: use selfLid: msg.selfLid ?? null, in the debug location so it reads from the message object instead.\nNotes\n\nThis patch gets wiped on npm update -g openclaw. Re-apply after updates.\nTested and working on both iPhone swipe-replies and WhatsApp Web (desktop) replies.\nThis likely affects anyone whose WhatsApp account uses LID format (ongoing WhatsApp migration).\nRelated: #11758 (same root cause, different symptom -- that issue covers explicit @mentions, this one covers implicit reply-to-bot detection)",
+    "source": "issue",
+    "source_url": "https://github.com/openclaw/openclaw/issues/23029",
+    "source_id": 23029
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "CHANGELOG.md",
+      "extensions/whatsapp/src/auto-reply/monitor/group-gating.ts",
+      "extensions/whatsapp/src/auto-reply/web-auto-reply-monitor.test.ts",
+      "extensions/whatsapp/src/inbound/monitor.ts",
+      "extensions/whatsapp/src/inbound/types.ts",
+      "extensions/whatsapp/src/monitor-inbox.streams-inbound-messages.test.ts",
+      "extensions/whatsapp/src/monitor-inbox.test-harness.ts"
+    ],
+    "affected_directories": [
+      "extensions/whatsapp/src",
+      "extensions/whatsapp/src/auto-reply",
+      "extensions/whatsapp/src/auto-reply/monitor",
+      "extensions/whatsapp/src/inbound"
+    ],
+    "files_changed": 7,
+    "directories_changed": 4,
+    "insertions": 47,
+    "deletions": 7,
+    "test_files_changed": [
+      "extensions/whatsapp/src/auto-reply/web-auto-reply-monitor.test.ts",
+      "extensions/whatsapp/src/monitor-inbox.streams-inbound-messages.test.ts"
+    ],
+    "source_files_changed": [
+      "CHANGELOG.md",
+      "extensions/whatsapp/src/auto-reply/monitor/group-gating.ts",
+      "extensions/whatsapp/src/inbound/monitor.ts",
+      "extensions/whatsapp/src/inbound/types.ts",
+      "extensions/whatsapp/src/monitor-inbox.test-harness.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 48494,
+    "pr_url": "https://github.com/openclaw/openclaw/pull/48494",
+    "pr_title": "fix(whatsapp): restore implicit reply mentions for LID identities",
+    "pr_merged_at": "2026-03-16T21:44:36Z",
+    "issue_number": 23029,
+    "issue_url": "https://github.com/openclaw/openclaw/issues/23029",
+    "issue_created_at": "2026-02-21T23:15:34Z",
+    "issue_labels": [
+      "bug"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 7,
+    "directories_changed": 4,
+    "cross_package": false,
+    "insertions": 47,
+    "deletions": 7,
+    "dependency_depth": 5,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 8.9
+  },
+  "contamination": {
+    "issue_created_at": "2026-02-21T23:15:34Z",
+    "pr_merged_at": "2026-03-16T21:44:36Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "extensions/whatsapp/src/auto-reply/web-auto-reply-monitor.test.ts",
+      "extensions/whatsapp/src/monitor-inbox.streams-inbound-messages.test.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "CHANGELOG.md",
+      "extensions/whatsapp/src/auto-reply/monitor/group-gating.ts",
+      "extensions/whatsapp/src/auto-reply/web-auto-reply-monitor.test.ts",
+      "extensions/whatsapp/src/inbound/monitor.ts",
+      "extensions/whatsapp/src/inbound/types.ts",
+      "extensions/whatsapp/src/monitor-inbox.streams-inbound-messages.test.ts",
+      "extensions/whatsapp/src/monitor-inbox.test-harness.ts"
+    ],
+    "dependency_chain": [
+      "CHANGELOG.md",
+      "extensions/whatsapp/src/auto-reply/monitor/group-gating.ts",
+      "extensions/whatsapp/src/inbound/monitor.ts",
+      "extensions/whatsapp/src/inbound/types.ts",
+      "extensions/whatsapp/src/monitor-inbox.test-harness.ts"
+    ],
+    "min_context_tokens": 14000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "instance_id": "home-assistant__core-165173",
+  "repo": {
+    "full_name": "home-assistant/core",
+    "url": "https://github.com/home-assistant/core",
+    "base_commit": "5215e674b16b9a189a5908879b50d76a678e8957",
+    "primary_language": "Python",
+    "languages": [
+      "Python"
+    ]
+  },
+  "problem": {
+    "statement": "### The problem\n\nThe BT advertisement is visible in the list and graphical BT map.\nThe switchbot integration is not starting and indicates a configuration issue.\n\nThe Meater Pro CO2 is not available.\n\nMaybe an integration problem due to the python update ?\n\n### What version of Home Assistant Core has the issue?\n\n2026.3.0\n\n### What was the last working version of Home Assistant Core?\n\nprevious versions\n\n### What type of installation are you running?\n\nHome Assistant OS\n\n### Integration causing the issue\n\nswitchbot\n\n### Link to integration documentation on our website\n\n_No response_\n\n### Diagnostics information\n\n_No response_\n\n### Example YAML snippet\n\n```yaml\n\n```\n\n### Anything in the logs that might be useful for us?\n\n```txt\n\n```\n\n### Additional information\n\n_No response_",
+    "source": "issue",
+    "source_url": "https://github.com/home-assistant/core/issues/164817",
+    "source_id": 164817
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "homeassistant/components/switchbot/__init__.py",
+      "homeassistant/components/switchbot/config_flow.py",
+      "homeassistant/components/switchbot/const.py",
+      "tests/components/switchbot/__init__.py",
+      "tests/components/switchbot/test_config_flow.py",
+      "tests/components/switchbot/test_init.py"
+    ],
+    "affected_directories": [
+      "homeassistant/components/switchbot",
+      "tests/components/switchbot"
+    ],
+    "files_changed": 6,
+    "directories_changed": 2,
+    "insertions": 89,
+    "deletions": 2,
+    "test_files_changed": [
+      "tests/components/switchbot/__init__.py",
+      "tests/components/switchbot/test_config_flow.py",
+      "tests/components/switchbot/test_init.py"
+    ],
+    "source_files_changed": [
+      "homeassistant/components/switchbot/__init__.py",
+      "homeassistant/components/switchbot/config_flow.py",
+      "homeassistant/components/switchbot/const.py"
+    ]
+  },
+  "provenance": {
+    "pr_number": 165173,
+    "pr_url": "https://github.com/home-assistant/core/pull/165173",
+    "pr_title": "Fix Meter Pro CO2 not discoverable via BT proxies",
+    "pr_merged_at": "2026-03-25T13:38:52Z",
+    "issue_number": 164817,
+    "issue_url": "https://github.com/home-assistant/core/issues/164817",
+    "issue_created_at": "2026-03-05T09:35:19Z",
+    "issue_labels": [
+      "integration: switchbot"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "medium",
+    "reasoning_types": [
+      "cross-module"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 6,
+    "directories_changed": 2,
+    "cross_package": false,
+    "insertions": 89,
+    "deletions": 2,
+    "dependency_depth": 3,
+    "requires_test_understanding": true,
+    "requires_config_understanding": false,
+    "estimated_human_hours": 12.1
+  },
+  "contamination": {
+    "issue_created_at": "2026-03-05T09:35:19Z",
+    "pr_merged_at": "2026-03-25T13:38:52Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "python",
+    "runtime_version": "3.11",
+    "package_manager": "pip",
+    "install_command": "pip install -r requirements.txt",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "python -m pytest",
+    "fail_to_pass": [
+      "tests/components/switchbot/__init__.py",
+      "tests/components/switchbot/test_config_flow.py",
+      "tests/components/switchbot/test_init.py"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "homeassistant/components/switchbot/__init__.py",
+      "homeassistant/components/switchbot/config_flow.py",
+      "homeassistant/components/switchbot/const.py",
+      "tests/components/switchbot/__init__.py",
+      "tests/components/switchbot/test_config_flow.py",
+      "tests/components/switchbot/test_init.py"
+    ],
+    "dependency_chain": [
+      "homeassistant/components/switchbot/__init__.py",
+      "homeassistant/components/switchbot/config_flow.py",
+      "homeassistant/components/switchbot/const.py"
+    ],
+    "min_context_tokens": 12000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}

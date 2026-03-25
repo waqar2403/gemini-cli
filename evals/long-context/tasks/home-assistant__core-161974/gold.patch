@@ -1,0 +1,202 @@
+From 41e71bb84bd88b2c5f4a3ac9dd46205c9f4c3f32 Mon Sep 17 00:00:00 2001
+From: Laxen <1144747+Laxen@users.noreply.github.com>
+Date: Wed, 25 Feb 2026 19:03:47 +0000
+Subject: [PATCH] Add Matter test vendor/product IDs to labeling list
+
+---
+ homeassistant/components/matter/entity.py          | 10 ++++++++++
+ .../fixtures/nodes/mock_generic_switch_multi.json  |  8 +-------
+ tests/components/matter/snapshots/test_event.ambr  | 14 +++++++-------
+ tests/components/matter/snapshots/test_sensor.ambr | 14 +++++++-------
+ tests/components/matter/test_event.py              |  8 ++++----
+ 5 files changed, 29 insertions(+), 25 deletions(-)
+
+diff --git a/homeassistant/components/matter/entity.py b/homeassistant/components/matter/entity.py
+index ca36aa5cee979d..80a50491e46661 100644
+--- a/homeassistant/components/matter/entity.py
++++ b/homeassistant/components/matter/entity.py
+@@ -49,6 +49,16 @@
+         4: None,  # Inovelli VTM36
+         16: ["label", "name", "button"],  # Inovelli VTM30
+     },
++    65521: {  # Test/DIY devices
++        32768: ["ha_entitylabel"],
++        32769: ["ha_entitylabel"],
++        32770: ["ha_entitylabel"],
++    },
++    65522: {  # Test/DIY devices
++        32768: ["ha_entitylabel"],
++        32769: ["ha_entitylabel"],
++        32770: ["ha_entitylabel"],
++    },
+ }
+ 
+ 
+diff --git a/tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json b/tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json
+index 39284c67927687..77938098d2f381 100644
+--- a/tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json
++++ b/tests/components/matter/fixtures/nodes/mock_generic_switch_multi.json
+@@ -75,12 +75,6 @@
+     "1/59/65531": [0, 1, 65528, 65529, 65531, 65532, 65533],
+     "1/59/65532": 30,
+     "1/59/65528": [],
+-    "1/64/0": [
+-      {
+-        "0": "Label",
+-        "1": "1"
+-      }
+-    ],
+     "2/3/65529": [0, 64],
+     "2/3/65531": [0, 1, 65528, 65529, 65531, 65532, 65533],
+     "2/29/0": [
+@@ -107,7 +101,7 @@
+     "2/59/65528": [],
+     "2/64/0": [
+       {
+-        "0": "Label",
++        "0": "ha_entitylabel",
+         "1": "Fancy Button"
+       }
+     ]
+diff --git a/tests/components/matter/snapshots/test_event.ambr b/tests/components/matter/snapshots/test_event.ambr
+index f1497bccf23d94..9fdda652b2055c 100644
+--- a/tests/components/matter/snapshots/test_event.ambr
++++ b/tests/components/matter/snapshots/test_event.ambr
+@@ -1881,7 +1881,7 @@
+     'state': 'unknown',
+   })
+ # ---
+-# name: test_events[mock_generic_switch_multi][event.mock_generic_switch_button_2-entry]
++# name: test_events[mock_generic_switch_multi][event.mock_generic_switch_button_fancy_button-entry]
+   EntityRegistryEntrySnapshot({
+     'aliases': set({
+     }),
+@@ -1903,7 +1903,7 @@
+     'disabled_by': None,
+     'domain': 'event',
+     'entity_category': None,
+-    'entity_id': 'event.mock_generic_switch_button_2',
++    'entity_id': 'event.mock_generic_switch_button_fancy_button',
+     'has_entity_name': True,
+     'hidden_by': None,
+     'icon': None,
+@@ -1911,12 +1911,12 @@
+     'labels': set({
+     }),
+     'name': None,
+-    'object_id_base': 'Button (2)',
++    'object_id_base': 'Button (Fancy Button)',
+     'options': dict({
+     }),
+     'original_device_class': <EventDeviceClass.BUTTON: 'button'>,
+     'original_icon': None,
+-    'original_name': 'Button (2)',
++    'original_name': 'Button (Fancy Button)',
+     'platform': 'matter',
+     'previous_unique_id': None,
+     'suggested_object_id': None,
+@@ -1926,7 +1926,7 @@
+     'unit_of_measurement': None,
+   })
+ # ---
+-# name: test_events[mock_generic_switch_multi][event.mock_generic_switch_button_2-state]
++# name: test_events[mock_generic_switch_multi][event.mock_generic_switch_button_fancy_button-state]
+   StateSnapshot({
+     'attributes': ReadOnlyDict({
+       'device_class': 'button',
+@@ -1939,10 +1939,10 @@
+         'long_press',
+         'long_release',
+       ]),
+-      'friendly_name': 'Mock Generic Switch Button (2)',
++      'friendly_name': 'Mock Generic Switch Button (Fancy Button)',
+     }),
+     'context': <ANY>,
+-    'entity_id': 'event.mock_generic_switch_button_2',
++    'entity_id': 'event.mock_generic_switch_button_fancy_button',
+     'last_changed': <ANY>,
+     'last_reported': <ANY>,
+     'last_updated': <ANY>,
+diff --git a/tests/components/matter/snapshots/test_sensor.ambr b/tests/components/matter/snapshots/test_sensor.ambr
+index c9b2fb5b2c0723..e2dd4ab9209116 100644
+--- a/tests/components/matter/snapshots/test_sensor.ambr
++++ b/tests/components/matter/snapshots/test_sensor.ambr
+@@ -9329,7 +9329,7 @@
+     'state': '0',
+   })
+ # ---
+-# name: test_sensors[mock_generic_switch_multi][sensor.mock_generic_switch_current_switch_position_2-entry]
++# name: test_sensors[mock_generic_switch_multi][sensor.mock_generic_switch_current_switch_position_fancy_button-entry]
+   EntityRegistryEntrySnapshot({
+     'aliases': set({
+     }),
+@@ -9344,7 +9344,7 @@
+     'disabled_by': None,
+     'domain': 'sensor',
+     'entity_category': <EntityCategory.DIAGNOSTIC: 'diagnostic'>,
+-    'entity_id': 'sensor.mock_generic_switch_current_switch_position_2',
++    'entity_id': 'sensor.mock_generic_switch_current_switch_position_fancy_button',
+     'has_entity_name': True,
+     'hidden_by': None,
+     'icon': None,
+@@ -9352,12 +9352,12 @@
+     'labels': set({
+     }),
+     'name': None,
+-    'object_id_base': 'Current switch position (2)',
++    'object_id_base': 'Current switch position (Fancy Button)',
+     'options': dict({
+     }),
+     'original_device_class': None,
+     'original_icon': None,
+-    'original_name': 'Current switch position (2)',
++    'original_name': 'Current switch position (Fancy Button)',
+     'platform': 'matter',
+     'previous_unique_id': None,
+     'suggested_object_id': None,
+@@ -9367,14 +9367,14 @@
+     'unit_of_measurement': None,
+   })
+ # ---
+-# name: test_sensors[mock_generic_switch_multi][sensor.mock_generic_switch_current_switch_position_2-state]
++# name: test_sensors[mock_generic_switch_multi][sensor.mock_generic_switch_current_switch_position_fancy_button-state]
+   StateSnapshot({
+     'attributes': ReadOnlyDict({
+-      'friendly_name': 'Mock Generic Switch Current switch position (2)',
++      'friendly_name': 'Mock Generic Switch Current switch position (Fancy Button)',
+       'state_class': <SensorStateClass.MEASUREMENT: 'measurement'>,
+     }),
+     'context': <ANY>,
+-    'entity_id': 'sensor.mock_generic_switch_current_switch_position_2',
++    'entity_id': 'sensor.mock_generic_switch_current_switch_position_fancy_button',
+     'last_changed': <ANY>,
+     'last_reported': <ANY>,
+     'last_updated': <ANY>,
+diff --git a/tests/components/matter/test_event.py b/tests/components/matter/test_event.py
+index e18a59a7526598..7feddaac4cd192 100644
+--- a/tests/components/matter/test_event.py
++++ b/tests/components/matter/test_event.py
+@@ -74,7 +74,7 @@ async def test_generic_switch_multi_node(
+     state_button_1 = hass.states.get("event.mock_generic_switch_button_1")
+     assert state_button_1
+     assert state_button_1.state == "unknown"
+-    # name should be 'DeviceName Button (1)' due to the label set to just '1'
++    # name should be 'DeviceName Button (1)'
+     assert state_button_1.name == "Mock Generic Switch Button (1)"
+     # check event_types from featuremap 30 (0b11110) and MultiPressMax unset (default 2)
+     assert state_button_1.attributes[ATTR_EVENT_TYPES] == [
+@@ -84,11 +84,11 @@ async def test_generic_switch_multi_node(
+         "long_release",
+     ]
+     # check button 2
+-    state_button_2 = hass.states.get("event.mock_generic_switch_button_2")
++    state_button_2 = hass.states.get("event.mock_generic_switch_button_fancy_button")
+     assert state_button_2
+     assert state_button_2.state == "unknown"
+-    # name should be 'DeviceName Button (2)'
+-    assert state_button_2.name == "Mock Generic Switch Button (2)"
++    # name should be 'DeviceName Button (Fancy Button)' due to ha_entitylabel 'Fancy Button'
++    assert state_button_2.name == "Mock Generic Switch Button (Fancy Button)"
+     # check event_types from featuremap 30 (0b11110) and MultiPressMax 4
+     assert state_button_2.attributes[ATTR_EVENT_TYPES] == [
+         "multi_press_1",

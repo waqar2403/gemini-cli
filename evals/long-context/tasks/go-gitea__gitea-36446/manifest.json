@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "instance_id": "go-gitea__gitea-36446",
+  "repo": {
+    "full_name": "go-gitea/gitea",
+    "url": "https://github.com/go-gitea/gitea",
+    "base_commit": "a608b9e1e31dfa3ba3a05ee47c2b5f8e9d65fff0",
+    "primary_language": "Go",
+    "languages": [
+      "Go",
+      "TypeScript"
+    ]
+  },
+  "problem": {
+    "statement": "### Description\n\n### Description\nWhen configuring an OAuth2 Authentication Service through the Gitea web interface, the suggested Redirect/Callback URL fails to properly encode apostrophes in the Authentication Name field.\n\n### Steps to Reproduce\n- Navigate to Site Administration \u2192 Authentication Sources\n- Add a new OAuth2 authentication source\n- Enter an Authentication Name containing an apostrophe (e.g., LiBER's Microsoft Entra)\n- Observe the auto-generated Redirect/Callback URL\n\n### Expected Behavior\nThe apostrophe character ' should be percent-encoded as %27 in the suggested Redirect/Callback URL according to RFC 3986.\nExample: https://gitea.internal.liberbattery.it/user/oauth2/LiBER%27s%20Microsoft%20Entra/callback\n\n### Actual Behavior\nThe apostrophe remains unencoded in the suggested URL.\nExample: https://gitea.internal.liberbattery.it/user/oauth2/LiBER's%20Microsoft%20Entra/callback\n\n### Impact\nThis creates an invalid URL that will cause OAuth2 callback failures when the authentication provider attempts to redirect back to Gitea. You have to change the Redirect URL manually\n\n### Screenshots\n\n<img width=\"993\" height=\"360\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/58bc0e72-796a-42fb-aff7-94175ff4c477\" />\n\n### Gitea Version\n\n1.25.3 built with GNU Make 4.4.1, go1.25.5 : bindata, timetzdata, sqlite, sqlite_unlock_notify\n\n### Can you reproduce the bug on the Gitea demo site?\n\nNo\n\n### Operating System\n\n_No response_\n\n### Browser Version\n\nMicrosoft Edge Version 144.0.3719.82",
+    "source": "issue",
+    "source_url": "https://github.com/go-gitea/gitea/issues/36409",
+    "source_id": 36409
+  },
+  "gold_patch": {
+    "patch_file": "gold.patch",
+    "affected_files": [
+      "modules/markup/html.go",
+      "modules/markup/html_commit.go",
+      "modules/markup/html_test.go",
+      "modules/templates/helper_test.go",
+      "options/locale/locale_en-US.json",
+      "templates/repo/issue/search.tmpl",
+      "web_src/css/base.css",
+      "web_src/js/features/admin/common.ts",
+      "web_src/js/features/common-issue-list.test.ts",
+      "web_src/js/features/common-issue-list.ts",
+      "web_src/js/utils.test.ts",
+      "web_src/js/utils.ts"
+    ],
+    "affected_directories": [
+      "modules/markup",
+      "modules/templates",
+      "options/locale",
+      "templates/repo/issue",
+      "web_src/css",
+      "web_src/js",
+      "web_src/js/features",
+      "web_src/js/features/admin"
+    ],
+    "files_changed": 12,
+    "directories_changed": 8,
+    "insertions": 90,
+    "deletions": 48,
+    "test_files_changed": [
+      "modules/markup/html_test.go",
+      "modules/templates/helper_test.go",
+      "web_src/js/features/common-issue-list.test.ts",
+      "web_src/js/utils.test.ts"
+    ],
+    "source_files_changed": [
+      "modules/markup/html.go",
+      "modules/markup/html_commit.go",
+      "options/locale/locale_en-US.json",
+      "templates/repo/issue/search.tmpl",
+      "web_src/css/base.css",
+      "web_src/js/features/admin/common.ts",
+      "web_src/js/features/common-issue-list.ts",
+      "web_src/js/utils.ts"
+    ]
+  },
+  "provenance": {
+    "pr_number": 36446,
+    "pr_url": "https://github.com/go-gitea/gitea/pull/36446",
+    "pr_title": "Fix various bugs",
+    "pr_merged_at": "2026-01-24T11:30:47Z",
+    "issue_number": 36409,
+    "issue_url": "https://github.com/go-gitea/gitea/issues/36409",
+    "issue_created_at": "2026-01-20T09:20:02Z",
+    "issue_labels": [
+      "type/bug",
+      "topic/ui",
+      "issue/workaround"
+    ]
+  },
+  "classification": {
+    "task_type": "bugfix",
+    "difficulty_tier": "hard",
+    "reasoning_types": [
+      "cross-module",
+      "config-propagation"
+    ],
+    "description": ""
+  },
+  "difficulty_signals": {
+    "files_changed": 12,
+    "directories_changed": 8,
+    "cross_package": false,
+    "insertions": 90,
+    "deletions": 48,
+    "dependency_depth": 8,
+    "requires_test_understanding": true,
+    "requires_config_understanding": true,
+    "estimated_human_hours": 19.8
+  },
+  "contamination": {
+    "issue_created_at": "2026-01-20T09:20:02Z",
+    "pr_merged_at": "2026-01-24T11:30:47Z",
+    "training_cutoff_safe": true,
+    "solution_in_issue": false,
+    "solution_in_pr_comments": false,
+    "solution_in_commit_message": false,
+    "synthetic": false
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "20",
+    "package_manager": "npm",
+    "install_command": "npm ci",
+    "build_command": "",
+    "setup_commands": [],
+    "env_vars": {},
+    "docker_image": null,
+    "timeout_seconds": 1200
+  },
+  "validation": {
+    "test_command": "npm test",
+    "fail_to_pass": [
+      "modules/markup/html_test.go",
+      "modules/templates/helper_test.go",
+      "web_src/js/features/common-issue-list.test.ts",
+      "web_src/js/utils.test.ts"
+    ],
+    "pass_to_pass": []
+  },
+  "context": {
+    "required_files": [
+      "modules/markup/html.go",
+      "modules/markup/html_commit.go",
+      "modules/markup/html_test.go",
+      "modules/templates/helper_test.go",
+      "options/locale/locale_en-US.json",
+      "templates/repo/issue/search.tmpl",
+      "web_src/css/base.css",
+      "web_src/js/features/admin/common.ts",
+      "web_src/js/features/common-issue-list.test.ts",
+      "web_src/js/features/common-issue-list.ts",
+      "web_src/js/utils.test.ts",
+      "web_src/js/utils.ts"
+    ],
+    "dependency_chain": [
+      "modules/markup/html.go",
+      "modules/markup/html_commit.go",
+      "options/locale/locale_en-US.json",
+      "templates/repo/issue/search.tmpl",
+      "web_src/css/base.css",
+      "web_src/js/features/admin/common.ts",
+      "web_src/js/features/common-issue-list.ts",
+      "web_src/js/utils.ts"
+    ],
+    "min_context_tokens": 24000,
+    "total_repo_files": 0,
+    "total_repo_loc": 0
+  }
+}
