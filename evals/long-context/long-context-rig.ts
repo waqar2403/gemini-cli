@@ -172,7 +172,6 @@ export class LongContextRig {
 
     const testCommand = manifest.validation.test_command;
     let testOutput = '';
-    let testExitCode: number | null = null;
 
     try {
       testOutput = execSync(testCommand, {
@@ -181,14 +180,11 @@ export class LongContextRig {
         timeout: 300_000,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      testExitCode = 0;
     } catch (err: unknown) {
       const execErr = err as {
-        status?: number;
         stdout?: string;
         stderr?: string;
       };
-      testExitCode = execErr.status ?? 1;
       testOutput = (execErr.stdout ?? '') + '\n' + (execErr.stderr ?? '');
     }
 
@@ -321,10 +317,9 @@ export class LongContextRig {
         folderTrust: { enabled: false },
       },
       ui: { useAlternateBuffer: true },
-      sandbox:
-        env['GEMINI_SANDBOX'] !== 'false'
-          ? env['GEMINI_SANDBOX']
-          : false,
+      sandbox: env['GEMINI_SANDBOX']
+        ? env['GEMINI_SANDBOX'] !== 'false'
+        : undefined,
       ide: { enabled: false, hasSeenNudge: true },
     };
 
@@ -363,17 +358,20 @@ export class LongContextRig {
   }
 
   private checkTestPassed(testOutput: string, testId: string): boolean {
-    const lowerOutput = testOutput.toLowerCase();
-    const lowerTestId = testId.toLowerCase();
+    const testKey = testId.replace(/::?\*$/, '');
+    const lowerKey = testKey.toLowerCase();
+    const lines = testOutput.split('\n');
 
-    if (lowerOutput.includes(`fail`) && lowerOutput.includes(lowerTestId)) {
-      return false;
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      if (!lower.includes(lowerKey)) continue;
+
+      if (/\bfail(ed|ure|ing)?\b/i.test(line)) return false;
+      if (/\bpass(ed|ing)?\b/i.test(line)) return true;
+      if (/\bok\b/i.test(line)) return true;
     }
-    if (lowerOutput.includes(`pass`) && lowerOutput.includes(lowerTestId)) {
-      return true;
-    }
-    // If the test name appears and overall exit was 0, assume pass
-    return lowerOutput.includes(lowerTestId);
+
+    return false;
   }
 
   private classifyFailure(

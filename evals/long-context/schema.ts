@@ -36,7 +36,7 @@ export interface RepoInfo {
   base_commit: string;
   primary_language: string;
   languages: string[];
-  size_kb: number;
+  size_kb?: number;
 }
 
 export interface ProblemInfo {
@@ -54,6 +54,8 @@ export interface GoldPatchInfo {
   directories_changed: number;
   insertions: number;
   deletions: number;
+  test_files_changed?: string[];
+  source_files_changed?: string[];
 }
 
 export interface ProvenanceInfo {
@@ -64,6 +66,7 @@ export interface ProvenanceInfo {
   issue_number: number | null;
   issue_url: string | null;
   issue_created_at: string | null;
+  issue_labels?: string[];
 }
 
 export interface EnvironmentInfo {
@@ -71,7 +74,10 @@ export interface EnvironmentInfo {
   runtime_version: string;
   package_manager: string;
   install_command: string;
-  test_command?: string;
+  build_command?: string;
+  setup_commands?: string[];
+  env_vars?: Record<string, string>;
+  docker_image?: string | null;
   timeout_seconds: number;
 }
 
@@ -83,20 +89,26 @@ export interface ValidationInfo {
 
 export interface ContextInfo {
   required_files: string[];
-  estimated_tokens: number;
+  dependency_chain?: string[];
   min_context_tokens: number;
+  total_repo_files?: number;
+  total_repo_loc?: number;
 }
 
 export interface ClassificationInfo {
   task_type: 'bugfix' | 'feature' | 'refactor' | 'migration';
   difficulty_tier: 'medium' | 'hard' | 'expert';
   reasoning_types: string[];
+  description?: string;
 }
 
 export interface ContaminationInfo {
+  issue_created_at?: string;
   pr_merged_at: string;
   training_cutoff_safe: boolean;
   solution_in_issue: boolean;
+  solution_in_pr_comments?: boolean;
+  solution_in_commit_message?: boolean;
   synthetic: boolean;
 }
 
@@ -104,6 +116,11 @@ export interface DifficultySignals {
   files_changed: number;
   directories_changed: number;
   cross_package: boolean;
+  insertions?: number;
+  deletions?: number;
+  dependency_depth?: number;
+  requires_test_understanding?: boolean;
+  requires_config_understanding?: boolean;
   estimated_human_hours: number;
 }
 

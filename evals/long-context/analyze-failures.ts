@@ -30,6 +30,7 @@ interface TaskResult {
   pass_to_pass: Record<string, boolean>;
   duration_ms: number;
   timestamp: string;
+  model?: string;
 }
 
 function loadResults(resultsDir: string): TaskResult[] {
@@ -77,9 +78,7 @@ function generateReport(results: TaskResult[]): string {
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(`Total tasks evaluated: ${results.length}`);
-  lines.push(
-    `Overall resolution rate: ${resolutionRate(results)}`,
-  );
+  lines.push(`Overall resolution rate: ${resolutionRate(results)}`);
   lines.push('');
 
   // By Difficulty
@@ -87,15 +86,13 @@ function generateReport(results: TaskResult[]): string {
   lines.push('');
   lines.push('| Difficulty | Tasks | Resolved | Rate |');
   lines.push('|-----------|-------|----------|------|');
-  const byDiff = [...groupBy(results, (r) => r.difficulty)].sort(
-    (a, b) => a[0].localeCompare(b[0]),
+  const byDiff = [...groupBy(results, (r) => r.difficulty)].sort((a, b) =>
+    a[0].localeCompare(b[0]),
   );
   for (const [diff, group] of byDiff) {
     const resolved = group.filter((r) => r.resolved).length;
     const pct = ((resolved / group.length) * 100).toFixed(1);
-    lines.push(
-      `| ${diff} | ${group.length} | ${resolved} | ${pct}% |`,
-    );
+    lines.push(`| ${diff} | ${group.length} | ${resolved} | ${pct}% |`);
   }
   lines.push('');
 
@@ -104,15 +101,13 @@ function generateReport(results: TaskResult[]): string {
   lines.push('');
   lines.push('| Type | Tasks | Resolved | Rate |');
   lines.push('|------|-------|----------|------|');
-  const byType = [...groupBy(results, (r) => r.task_type)].sort(
-    (a, b) => a[0].localeCompare(b[0]),
+  const byType = [...groupBy(results, (r) => r.task_type)].sort((a, b) =>
+    a[0].localeCompare(b[0]),
   );
   for (const [type, group] of byType) {
     const resolved = group.filter((r) => r.resolved).length;
     const pct = ((resolved / group.length) * 100).toFixed(1);
-    lines.push(
-      `| ${type} | ${group.length} | ${resolved} | ${pct}% |`,
-    );
+    lines.push(`| ${type} | ${group.length} | ${resolved} | ${pct}% |`);
   }
   lines.push('');
 
@@ -121,17 +116,33 @@ function generateReport(results: TaskResult[]): string {
   lines.push('');
   lines.push('| Repository | Tasks | Resolved | Rate |');
   lines.push('|-----------|-------|----------|------|');
-  const byRepo = [...groupBy(results, (r) => r.repo)].sort(
-    (a, b) => a[0].localeCompare(b[0]),
+  const byRepo = [...groupBy(results, (r) => r.repo)].sort((a, b) =>
+    a[0].localeCompare(b[0]),
   );
   for (const [repo, group] of byRepo) {
     const resolved = group.filter((r) => r.resolved).length;
     const pct = ((resolved / group.length) * 100).toFixed(1);
-    lines.push(
-      `| ${repo} | ${group.length} | ${resolved} | ${pct}% |`,
-    );
+    lines.push(`| ${repo} | ${group.length} | ${resolved} | ${pct}% |`);
   }
   lines.push('');
+
+  // By Model (if present in results)
+  const withModel = results.filter((r) => r.model);
+  if (withModel.length > 0) {
+    lines.push('## Resolution Rate by Model');
+    lines.push('');
+    lines.push('| Model | Tasks | Resolved | Rate |');
+    lines.push('|-------|-------|----------|------|');
+    const byModel = [...groupBy(withModel, (r) => r.model!)].sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    );
+    for (const [model, group] of byModel) {
+      const resolved = group.filter((r) => r.resolved).length;
+      const pct = ((resolved / group.length) * 100).toFixed(1);
+      lines.push(`| ${model} | ${group.length} | ` + `${resolved} | ${pct}% |`);
+    }
+    lines.push('');
+  }
 
   // Failure Mode Distribution
   const failed = results.filter((r) => !r.resolved);
