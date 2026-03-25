@@ -63,4 +63,7 @@ gemini-debug.log
 .eslintcache
 evals/logs/
 
+# Long-context eval bare clone cache
+.long-context-cache/
+
 temp_agents/
